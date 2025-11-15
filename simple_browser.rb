@@ -4,7 +4,45 @@ require 'gtk3'
 require 'webkit2-gtk'
 require 'cgi'
 require 'fileutils'
+require 'json'
 require_relative 'history_manager'
+
+class Tab
+  attr_reader :webview, :list_box_row
+  attr_accessor :title, :uri, :favicon_data
+
+  def initialize(web_context, favicon_db, initial_uri = "https://www.google.com")
+    @webview = WebKit2Gtk::WebView.new(context: web_context)
+    @title = "New Tab"
+    @uri = initial_uri
+    @favicon_data = nil
+    @favicon_db = favicon_db
+    @list_box_row = nil  # Will be set when added to sidebar
+
+    # Connect signals
+    setup_signals
+
+    # Load initial URI
+    @webview.load_uri(initial_uri)
+  end
+
+  def setup_signals
+    @webview.signal_connect("notify::uri") do
+      @uri = @webview.uri
+      update_list_box_row if @list_box_row
+    end
+
+    @webview.signal_connect("notify::title") do
+      @title = @webview.title || "Untitled"
+      update_list_box_row if @list_box_row
+    end
+  end
+
+  def update_list_box_row
+    # This will be called to refresh the tab's appearance in the sidebar
+    # The actual implementation will be in BrowserWindow
+  end
+end
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -16,12 +54,20 @@ class BrowserWindow < Gtk::Window
     # Initialize history manager
     @history_manager = HistoryManager.new
 
-    # Hash to store visit data for each row
-    @row_data = {}
+    # Data directory
+    @data_dir = File.join(Dir.home, '.local/share/toy-browser')
+    FileUtils.mkdir_p(@data_dir)
+
+    # Load settings
+    load_settings
+
+    # Calculate initial sidebar width from ratio (using default window width)
+    # This will be recalculated when the window is actually shown
+    @sidebar_width = (1200 * @sidebar_width_ratio).to_i
 
     # Sidebar state
     @sidebar_visible = true
-    @sidebar_width = 300
+    @sidebar_mode = :tabs  # Can be :tabs or :history
 
     # Zen mode state
     @zen_mode = false
@@ -30,9 +76,16 @@ class BrowserWindow < Gtk::Window
     # Track last recorded visit to avoid duplicates
     @last_recorded_visit = nil
 
-    # Dark mode state
+    # Apply dark mode setting
     gtk_settings = Gtk::Settings.default
-    @dark_mode = gtk_settings.get_property("gtk-application-prefer-dark-theme")
+    gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
+
+    # Tab management
+    @tabs = []
+    @current_tab_index = 0
+
+    # Create web context first (needed for tabs)
+    @web_context = create_web_context
 
     # Create layout
     vbox = ::Gtk::Box.new(:vertical, 0)
@@ -74,27 +127,54 @@ class BrowserWindow < Gtk::Window
 
     # Horizontal paned for sidebar and content
     @paned = Gtk::Paned.new(:horizontal)
+    @paned.wide_handle = true  # Make the resize handle more visible
     vbox.pack_start(@paned, expand: true, fill: true, padding: 0)
 
-    # Left sidebar for history
+    # Left sidebar for tabs
     @sidebar = create_sidebar
-    @paned.pack1(@sidebar, resize: false, shrink: true)
-    @paned.set_position(@sidebar_width)  # Sidebar width
+    @paned.pack1(@sidebar, resize: true, shrink: true)
+    # Don't set position yet - wait until window is shown
 
-    # WebView with persistent storage
-    web_context = create_web_context
-    @webview = WebKit2Gtk::WebView.new(context: web_context)
-    @webview.signal_connect("notify::uri") { on_uri_changed }
-    @webview.signal_connect("notify::title") { on_title_changed }
-    @webview.signal_connect("load-changed") { |_webview, load_event| on_load_changed(load_event) }
+    # Track sidebar width changes (just update @sidebar_width, don't save yet)
+    @paned_position_set = false
+    @paned.signal_connect("notify::position") do
+      if @sidebar_visible && @paned.position > 0
+        # Ignore the first change after we manually set the position
+        if @paned_position_set
+          old_width = @sidebar_width
+          @sidebar_width = @paned.position
+          if old_width != @sidebar_width
+            puts "DEBUG: Paned position changed: #{old_width} -> #{@sidebar_width}"
+          end
+        end
+      end
+    end
 
-    # Set up favicon database - try different approaches
-    puts "DEBUG: WebContext methods containing 'favicon': #{web_context.methods.grep(/favicon/i)}"
-    puts "DEBUG: WebContext methods containing 'database': #{web_context.methods.grep(/database/i)}"
+    # Set the sidebar width AFTER the window is shown and GTK has done layout
+    signal_connect("map-event") do
+      # Calculate sidebar width based on actual window width and saved ratio
+      window_width = allocation.width
+      @sidebar_width = (window_width * @sidebar_width_ratio).to_i
+      puts "DEBUG: Window mapped (width: #{window_width}), setting paned position to: #{@sidebar_width} (ratio: #{@sidebar_width_ratio})"
+      @paned.set_position(@sidebar_width)
+      @paned_position_set = true
+      false
+    end
+
+    # Save settings when window is closing
+    signal_connect("delete-event") do
+      puts "DEBUG: Window closing, saving sidebar width: #{@sidebar_width}"
+      save_settings
+      false  # Allow the window to close
+    end
+
+    # Set up favicon database
+    puts "DEBUG: WebContext methods containing 'favicon': #{@web_context.methods.grep(/favicon/i)}"
+    puts "DEBUG: WebContext methods containing 'database': #{@web_context.methods.grep(/database/i)}"
 
     # Try to access favicon_database as a property
     begin
-      @favicon_db = web_context.favicon_database
+      @favicon_db = @web_context.favicon_database
       puts "DEBUG: Got favicon database: #{@favicon_db.inspect}"
       @favicon_db.signal_connect("favicon-changed") do |_db, page_uri, favicon_uri|
         on_favicon_changed(page_uri, favicon_uri)
@@ -104,19 +184,43 @@ class BrowserWindow < Gtk::Window
       @favicon_db = nil
     end
 
-    scrolled = Gtk::ScrolledWindow.new
-    scrolled.add(@webview)
-    @paned.pack2(scrolled, resize: true, shrink: false)
+    # Scrolled window for webview (will swap webviews when switching tabs)
+    @webview_container = Gtk::ScrolledWindow.new
+    @paned.pack2(@webview_container, resize: true, shrink: false)
 
-    # Load initial page
-    @webview.load_uri("https://www.example.com")
+    # Restore session if available, otherwise create initial tab
+    session = load_session
+    if session && session['tabs'] && !session['tabs'].empty?
+      # Restore tabs from session
+      session['tabs'].each do |tab_url|
+        create_new_tab(tab_url)
+      end
 
-    # Populate history
-    refresh_history
+      # Restore current tab index
+      if session['current_tab_index'] && session['current_tab_index'] < @tabs.length
+        switch_to_tab(session['current_tab_index'])
+      end
+    else
+      # Create initial tab
+      create_new_tab("https://www.example.com")
+    end
+
+    # Populate tabs in sidebar
+    refresh_tabs
 
     # Keyboard shortcuts
     signal_connect("key-press-event") do |widget, event|
-      if event.state.control_mask?
+      if event.state.control_mask? && event.state.shift_mask?
+        # Ctrl+Shift combinations
+        case event.keyval
+        when Gdk::Keyval::KEY_R
+          # Ctrl+Shift+R: Reload browser code
+          reload_browser
+          true  # Event handled
+        else
+          false  # Event not handled
+        end
+      elsif event.state.control_mask?
         case event.keyval
         when Gdk::Keyval::KEY_l
           # Ctrl+L: Focus and select URL bar
@@ -137,7 +241,27 @@ class BrowserWindow < Gtk::Window
           true  # Event handled
         when Gdk::Keyval::KEY_r
           # Ctrl+R: Refresh page
-          @webview.reload
+          current_tab.webview.reload if current_tab
+          true  # Event handled
+        when Gdk::Keyval::KEY_t
+          # Ctrl+T: New tab
+          create_new_tab
+          true  # Event handled
+        when Gdk::Keyval::KEY_w
+          # Ctrl+W: Close current tab
+          close_current_tab
+          true  # Event handled
+        when Gdk::Keyval::KEY_h
+          # Ctrl+H: Show history in sidebar
+          show_history_sidebar
+          true  # Event handled
+        when Gdk::Keyval::KEY_e
+          # Ctrl+E: Show tabs in sidebar
+          show_tabs_sidebar
+          true  # Event handled
+        when Gdk::Keyval::KEY_n
+          # Ctrl+N: New window
+          open_new_window
           true  # Event handled
         else
           false  # Event not handled
@@ -159,11 +283,15 @@ class BrowserWindow < Gtk::Window
       case event.button
       when 4
         # Mouse back button
-        @webview.go_back if @webview.can_go_back?
+        if current_tab && current_tab.webview.can_go_back?
+          current_tab.webview.go_back
+        end
         true  # Event handled
       when 5
         # Mouse forward button
-        @webview.go_forward if @webview.can_go_forward?
+        if current_tab && current_tab.webview.can_go_forward?
+          current_tab.webview.go_forward
+        end
         true  # Event handled
       else
         false  # Event not handled
@@ -171,10 +299,145 @@ class BrowserWindow < Gtk::Window
     end
   end
 
+  def current_tab
+    return nil if @tabs.empty?
+    @tabs[@current_tab_index]
+  end
+
+  def create_new_tab(uri = "https://www.google.com", switch_to: true)
+    tab = Tab.new(@web_context, @favicon_db, uri)
+
+    # Connect signals for this tab
+    setup_tab_signals(tab)
+
+    @tabs << tab
+
+    # Switch to the new tab if requested
+    if switch_to
+      @current_tab_index = @tabs.length - 1
+      switch_to_tab(@current_tab_index)
+    end
+
+    # Refresh tabs sidebar
+    refresh_tabs
+  end
+
+  def close_current_tab
+    return if @tabs.empty?
+
+    # Remove the tab
+    @tabs.delete_at(@current_tab_index)
+
+    # If that was the last tab, create a new one
+    if @tabs.empty?
+      create_new_tab
+      return
+    end
+
+    # Adjust current_tab_index if needed
+    if @current_tab_index >= @tabs.length
+      @current_tab_index = @tabs.length - 1
+    end
+
+    # Switch to the adjusted current tab
+    switch_to_tab(@current_tab_index)
+
+    # Refresh tabs sidebar
+    refresh_tabs
+  end
+
+  def switch_to_tab(index)
+    return if index < 0 || index >= @tabs.length
+
+    @current_tab_index = index
+    tab = @tabs[index]
+
+    # Remove old webview from container
+    @webview_container.children.each do |child|
+      @webview_container.remove(child)
+    end
+
+    # Add new webview to container
+    @webview_container.add(tab.webview)
+    @webview_container.show_all
+
+    # Update URL bar with current tab's URI
+    @url_entry.text = tab.uri || ""
+
+    # Update window title
+    update_window_title
+
+    # Refresh tabs to show selection
+    refresh_tabs
+  end
+
+  def update_window_title
+    if current_tab && current_tab.title && !current_tab.title.empty?
+      set_title("#{current_tab.title} - Toy Browser")
+    else
+      set_title("Toy Browser")
+    end
+  end
+
+  def setup_tab_signals(tab)
+    tab.webview.signal_connect("notify::uri") do
+      next unless current_tab == tab
+      on_uri_changed
+    end
+
+    tab.webview.signal_connect("notify::title") do
+      next unless current_tab == tab
+      on_title_changed
+      update_window_title
+    end
+
+    tab.webview.signal_connect("load-changed") do |_webview, load_event|
+      next unless current_tab == tab
+      on_load_changed(load_event)
+    end
+
+    # Handle Ctrl+Click to open links in new tab
+    tab.webview.signal_connect("decide-policy") do |_webview, decision, decision_type|
+      if decision_type == :navigation_action
+        navigation_action = decision.navigation_action
+        modifiers = navigation_action.modifiers
+
+        # Check if Ctrl key is pressed
+        # Convert modifiers to integer and check for CONTROL_MASK
+        ctrl_pressed = (modifiers.to_i & Gdk::ModifierType::CONTROL_MASK.to_i) != 0
+
+        if ctrl_pressed
+          # Get the URI being navigated to
+          uri_request = navigation_action.request
+          uri = uri_request.uri
+
+          # Only handle http/https links
+          if uri && (uri.start_with?("http://") || uri.start_with?("https://"))
+            # Ignore this navigation in the current tab
+            decision.ignore
+
+            # Open in new tab (but don't switch to it)
+            create_new_tab(uri, switch_to: false)
+
+            true  # Stop signal propagation
+          else
+            false  # Let other handlers process
+          end
+        else
+          false  # Let the navigation proceed normally
+        end
+      else
+        false  # Not a navigation action, let it proceed
+      end
+    end
+  end
+
   def on_load_url
+    return unless current_tab
+
     url = @url_entry.text
     url = "https://#{url}" unless url.start_with?("http://", "https://")
-    @webview.load_uri(url)
+    current_tab.webview.load_uri(url)
 
     # In zen mode, hide toolbar after submitting URL
     if @zen_mode
@@ -183,21 +446,28 @@ class BrowserWindow < Gtk::Window
   end
 
   def on_uri_changed
-    uri = @webview.uri
+    return unless current_tab
+    uri = current_tab.webview.uri
     return unless uri
 
     # Update URL bar only
     # Don't record history here - wait for title to load in on_title_changed
     @url_entry.text = uri
+    current_tab.uri = uri
   end
 
   def on_title_changed
+    return unless current_tab
+
     # When title changes (e.g., YouTube video loads after URL change),
     # record/update the visit with the new title
-    uri = @webview.uri
-    title = @webview.title
+    uri = current_tab.webview.uri
+    title = current_tab.webview.title
 
     if uri && !uri.empty? && title && !title.empty?
+      current_tab.title = title
+      current_tab.uri = uri
+
       # Only record if this is a different URI or title than last recorded
       visit_key = "#{uri}|#{title}"
       unless @last_recorded_visit == visit_key
@@ -206,9 +476,10 @@ class BrowserWindow < Gtk::Window
 
         # Try to fetch favicon for this page (important for SPAs like YouTube)
         fetch_and_save_favicon(uri)
-
-        refresh_history
       end
+
+      # Refresh tabs to update title in sidebar
+      refresh_tabs
     end
   end
 
@@ -285,7 +556,16 @@ class BrowserWindow < Gtk::Window
     if favicon_data
       puts "DEBUG: Saving favicon data (#{favicon_data.bytesize} bytes) for #{page_uri}"
       @history_manager.update_favicon(page_uri, favicon_data)
-      refresh_history
+
+      # Update the tab's favicon if it matches this URI
+      @tabs.each do |tab|
+        if tab.uri == page_uri
+          tab.favicon_data = favicon_data
+        end
+      end
+
+      # Refresh tabs to show the new favicon
+      refresh_tabs
     else
       puts "DEBUG: Failed to convert favicon to PNG for #{page_uri}"
     end
@@ -315,11 +595,11 @@ class BrowserWindow < Gtk::Window
   end
 
   def on_back
-    @webview.go_back
+    current_tab.webview.go_back if current_tab
   end
 
   def on_forward
-    @webview.go_forward
+    current_tab.webview.go_forward if current_tab
   end
 
   def create_web_context
@@ -349,31 +629,156 @@ class BrowserWindow < Gtk::Window
     sidebar_box = Gtk::Box.new(:vertical, 0)
 
     # Sidebar header
-    header = Gtk::Label.new
-    header.markup = "<b>Browsing History</b>"
-    header.margin_top = 10
-    header.margin_bottom = 10
-    sidebar_box.pack_start(header, expand: false, fill: false, padding: 0)
+    @sidebar_header = Gtk::Label.new
+    @sidebar_header.markup = "<b>Tabs</b>"
+    @sidebar_header.margin_top = 10
+    @sidebar_header.margin_bottom = 10
+    sidebar_box.pack_start(@sidebar_header, expand: false, fill: false, padding: 0)
 
-    # History list
+    # Scrolled window for list
     scrolled = Gtk::ScrolledWindow.new
     scrolled.set_policy(:never, :automatic)
+
+    # Create both list boxes
+    @tabs_list = Gtk::ListBox.new
+    @tabs_list.selection_mode = :single
+    @tabs_list.signal_connect("row-activated") { |_list, row| on_tab_clicked(row) }
 
     @history_list = Gtk::ListBox.new
     @history_list.selection_mode = :single
     @history_list.signal_connect("row-activated") { |_list, row| on_history_item_clicked(row) }
 
-    scrolled.add(@history_list)
+    # Container to hold either tabs or history list
+    @sidebar_content = Gtk::Box.new(:vertical, 0)
+    @sidebar_content.pack_start(@tabs_list, expand: true, fill: true, padding: 0)
+
+    scrolled.add(@sidebar_content)
     sidebar_box.pack_start(scrolled, expand: true, fill: true, padding: 0)
 
     sidebar_box.set_size_request(300, -1)
     sidebar_box
   end
 
+  def show_tabs_sidebar
+    # Show sidebar if it's hidden
+    if !@sidebar_visible
+      @sidebar_visible = true
+      @sidebar.show_all
+      @paned.set_position(@sidebar_width)
+    end
+
+    return if @sidebar_mode == :tabs
+
+    @sidebar_mode = :tabs
+    @sidebar_header.markup = "<b>Tabs</b>"
+
+    # Clear sidebar content
+    @sidebar_content.children.each { |child| @sidebar_content.remove(child) }
+
+    # Add tabs list
+    @sidebar_content.pack_start(@tabs_list, expand: true, fill: true, padding: 0)
+    @sidebar_content.show_all
+
+    # Refresh tabs
+    refresh_tabs
+  end
+
+  def show_history_sidebar
+    # Show sidebar if it's hidden
+    if !@sidebar_visible
+      @sidebar_visible = true
+      @sidebar.show_all
+      @paned.set_position(@sidebar_width)
+    end
+
+    return if @sidebar_mode == :history
+
+    @sidebar_mode = :history
+    @sidebar_header.markup = "<b>Browsing History</b>"
+
+    # Clear sidebar content
+    @sidebar_content.children.each { |child| @sidebar_content.remove(child) }
+
+    # Add history list
+    @sidebar_content.pack_start(@history_list, expand: true, fill: true, padding: 0)
+    @sidebar_content.show_all
+
+    # Refresh history
+    refresh_history
+  end
+
+  def refresh_tabs
+    # Clear existing items
+    @tabs_list.children.each { |child| @tabs_list.remove(child) }
+
+    # Add a row for each tab
+    @tabs.each_with_index do |tab, index|
+      row = create_tab_row(tab, index)
+      @tabs_list.add(row)
+
+      # Highlight the current tab
+      if index == @current_tab_index
+        @tabs_list.select_row(row)
+      end
+    end
+
+    @tabs_list.show_all
+  end
+
+  def create_tab_row(tab, index)
+    row = Gtk::ListBoxRow.new
+
+    # Horizontal box for favicon + text content
+    hbox = Gtk::Box.new(:horizontal, 8)
+    hbox.margin_top = 8
+    hbox.margin_bottom = 8
+    hbox.margin_start = 12
+    hbox.margin_end = 12
+
+    # Favicon
+    favicon_image = create_favicon_image(tab.favicon_data)
+    favicon_image.valign = :start
+    hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
+
+    # Vertical box for text content
+    vbox = Gtk::Box.new(:vertical, 2)
+
+    # Title
+    title = tab.title || "New Tab"
+    title_label = Gtk::Label.new
+    title_label.markup = "<b>#{CGI.escapeHTML(title[0..40])}</b>"
+    title_label.halign = :start
+    title_label.ellipsize = :end
+    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
+
+    # URL
+    if tab.uri && !tab.uri.empty?
+      url_label = Gtk::Label.new(tab.uri)
+      url_label.halign = :start
+      url_label.ellipsize = :middle
+      url_label.max_width_chars = 30
+      url_label.style_context.add_class("dim-label")
+      vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
+    end
+
+    hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
+
+    row.add(hbox)
+
+    # Store the tab index in the row
+    row.instance_variable_set(:@tab_index, index)
+
+    row
+  end
+
+  def on_tab_clicked(row)
+    tab_index = row.instance_variable_get(:@tab_index)
+    switch_to_tab(tab_index) if tab_index
+  end
+
   def refresh_history
-    # Clear existing items and data
+    # Clear existing items
     @history_list.children.each { |child| @history_list.remove(child) }
-    @row_data.clear
 
     # Get recent history
     visits = @history_manager.recent_visits(50)
@@ -430,8 +835,18 @@ class BrowserWindow < Gtk::Window
     hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
 
     row.add(hbox)
-    @row_data[row] = visit  # Store visit data in hash
+
+    # Store visit data in the row
+    row.instance_variable_set(:@visit_data, visit)
+
     row
+  end
+
+  def on_history_item_clicked(row)
+    visit = row.instance_variable_get(:@visit_data)
+    if visit && current_tab
+      current_tab.webview.load_uri(visit['uri'])
+    end
   end
 
   def create_favicon_image(favicon_data)
@@ -476,15 +891,13 @@ class BrowserWindow < Gtk::Window
     end
   end
 
-  def on_history_item_clicked(row)
-    visit = @row_data[row]
-    @webview.load_uri(visit['uri']) if visit
-  end
 
   def on_load_changed(load_event)
+    return unless current_tab
+
     if load_event == :finished
-      uri = @webview.uri
-      title = @webview.title
+      uri = current_tab.webview.uri
+      title = current_tab.webview.title
 
       if uri && !uri.empty?
         # Only record if this is a different URI or title than last recorded
@@ -495,8 +908,6 @@ class BrowserWindow < Gtk::Window
 
           # Try to fetch favicon for this page
           fetch_and_save_favicon(uri)
-
-          refresh_history
         end
       end
     end
@@ -504,10 +915,10 @@ class BrowserWindow < Gtk::Window
 
   def toggle_sidebar
     if @sidebar_visible
-      # Hide sidebar
+      # Hide sidebar - set flag BEFORE changing position
+      @sidebar_visible = false
       @sidebar.hide
       @paned.set_position(0)
-      @sidebar_visible = false
     else
       # Show sidebar
       @sidebar.show_all
@@ -548,7 +959,116 @@ class BrowserWindow < Gtk::Window
     gtk_settings = Gtk::Settings.default
     gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
 
+    # Save settings
+    save_settings
+
     puts @dark_mode ? "🌙 Dark mode enabled" : "☀️  Light mode enabled"
+  end
+
+  def load_settings
+    settings_file = File.join(@data_dir, 'settings.json')
+
+    # Default settings
+    @dark_mode = false
+    @sidebar_width_ratio = 0.25  # 25% of window width
+
+    if File.exist?(settings_file)
+      begin
+        settings = JSON.parse(File.read(settings_file))
+        @dark_mode = settings['dark_mode'] || false
+        @sidebar_width_ratio = settings['sidebar_width_ratio'] || 0.25
+        puts "DEBUG: Loaded sidebar width ratio from settings: #{@sidebar_width_ratio}"
+      rescue => e
+        puts "Failed to load settings: #{e.message}"
+      end
+    else
+      puts "DEBUG: No settings file, using default ratio: #{@sidebar_width_ratio}"
+    end
+  end
+
+  def save_settings
+    settings_file = File.join(@data_dir, 'settings.json')
+
+    # Calculate ratio based on current window width
+    window_width = allocation.width
+    if window_width > 0 && @sidebar_visible
+      @sidebar_width_ratio = @sidebar_width.to_f / window_width.to_f
+      @sidebar_width_ratio = [@sidebar_width_ratio, 0.1].max  # Min 10%
+      @sidebar_width_ratio = [@sidebar_width_ratio, 0.5].min  # Max 50%
+    end
+
+    settings = {
+      'dark_mode' => @dark_mode,
+      'sidebar_width_ratio' => @sidebar_width_ratio
+    }
+
+    begin
+      File.write(settings_file, JSON.pretty_generate(settings))
+      puts "DEBUG: Saved sidebar width ratio: #{@sidebar_width_ratio}"
+    rescue => e
+      puts "Failed to save settings: #{e.message}"
+    end
+  end
+
+  def open_new_window
+    # Create a new browser window with the same application
+    app = self.application
+    if app
+      new_window = BrowserWindow.new
+      new_window.set_application(app)
+      new_window.show_all
+    end
+  end
+
+  def reload_browser
+    puts "Reloading browser with latest code..."
+
+    # Save current session (tab URLs)
+    save_session
+
+    # Spawn a new browser process with the same script
+    script_path = File.expand_path($PROGRAM_NAME)
+    spawn("ruby", script_path)
+
+    # Close this window (will quit the application)
+    close
+  end
+
+  def save_session
+    session_file = File.join(@data_dir, 'session.json')
+
+    # Collect all tab URLs
+    tab_urls = @tabs.map { |tab| tab.uri || "https://www.google.com" }
+
+    session = {
+      'tabs' => tab_urls,
+      'current_tab_index' => @current_tab_index
+    }
+
+    begin
+      File.write(session_file, JSON.pretty_generate(session))
+    rescue => e
+      puts "Failed to save session: #{e.message}"
+    end
+  end
+
+  def load_session
+    session_file = File.join(@data_dir, 'session.json')
+
+    if File.exist?(session_file)
+      begin
+        session = JSON.parse(File.read(session_file))
+
+        # Delete session file after loading
+        File.delete(session_file)
+
+        return session
+      rescue => e
+        puts "Failed to load session: #{e.message}"
+      end
+    end
+
+    nil
   end
 end
 
