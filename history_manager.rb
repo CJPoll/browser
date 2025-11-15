@@ -27,6 +27,7 @@ class HistoryManager
         site_id INTEGER NOT NULL,
         uri TEXT NOT NULL UNIQUE,
         title TEXT,
+        favicon BLOB,
         created_at INTEGER NOT NULL,
         last_visited_at INTEGER NOT NULL,
         visit_count INTEGER DEFAULT 0,
@@ -53,7 +54,7 @@ class HistoryManager
     @db.execute "CREATE INDEX IF NOT EXISTS idx_visits_visited_at ON visits(visited_at DESC)"
   end
 
-  def record_visit(url, title = nil)
+  def record_visit(url, title = nil, favicon_data = nil)
     return unless url
 
     begin
@@ -76,13 +77,35 @@ class HistoryManager
           [page_id, now, title]
         )
 
-        # Update page stats
-        @db.execute(
-          "UPDATE pages SET last_visited_at = ?, visit_count = visit_count + 1, title = COALESCE(?, title)
-           WHERE id = ?",
-          [now, title, page_id]
-        )
+        # Update page stats and favicon
+        if favicon_data
+          @db.execute(
+            "UPDATE pages SET last_visited_at = ?, visit_count = visit_count + 1, title = COALESCE(?, title), favicon = ?
+             WHERE id = ?",
+            [now, title, favicon_data, page_id]
+          )
+        else
+          @db.execute(
+            "UPDATE pages SET last_visited_at = ?, visit_count = visit_count + 1, title = COALESCE(?, title)
+             WHERE id = ?",
+            [now, title, page_id]
+          )
+        end
       end
+    rescue URI::InvalidURIError => e
+      warn "Invalid URI: #{url} - #{e.message}"
+    end
+  end
+
+  def update_favicon(url, favicon_data)
+    return unless url && favicon_data
+
+    begin
+      uri = URI.parse(url)
+      @db.execute(
+        "UPDATE pages SET favicon = ? WHERE uri = ?",
+        [favicon_data, url]
+      )
     rescue URI::InvalidURIError => e
       warn "Invalid URI: #{url} - #{e.message}"
     end
@@ -97,6 +120,7 @@ class HistoryManager
         p.uri,
         p.title as page_title,
         p.visit_count,
+        p.favicon,
         s.authority
       FROM visits v
       JOIN pages p ON v.page_id = p.id

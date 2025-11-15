@@ -88,6 +88,22 @@ class BrowserWindow < Gtk::Window
     @webview.signal_connect("notify::title") { on_title_changed }
     @webview.signal_connect("load-changed") { |_webview, load_event| on_load_changed(load_event) }
 
+    # Set up favicon database - try different approaches
+    puts "DEBUG: WebContext methods containing 'favicon': #{web_context.methods.grep(/favicon/i)}"
+    puts "DEBUG: WebContext methods containing 'database': #{web_context.methods.grep(/database/i)}"
+
+    # Try to access favicon_database as a property
+    begin
+      @favicon_db = web_context.favicon_database
+      puts "DEBUG: Got favicon database: #{@favicon_db.inspect}"
+      @favicon_db.signal_connect("favicon-changed") do |_db, page_uri, favicon_uri|
+        on_favicon_changed(page_uri, favicon_uri)
+      end
+    rescue => e
+      puts "DEBUG: Error accessing favicon database: #{e.message}"
+      @favicon_db = nil
+    end
+
     scrolled = Gtk::ScrolledWindow.new
     scrolled.add(@webview)
     @paned.pack2(scrolled, resize: true, shrink: false)
@@ -187,8 +203,114 @@ class BrowserWindow < Gtk::Window
       unless @last_recorded_visit == visit_key
         @history_manager.record_visit(uri, title)
         @last_recorded_visit = visit_key
+
+        # Try to fetch favicon for this page (important for SPAs like YouTube)
+        fetch_and_save_favicon(uri)
+
         refresh_history
       end
+    end
+  end
+
+  def on_favicon_changed(page_uri, favicon_uri)
+    return unless @favicon_db
+
+    puts "DEBUG: Favicon changed for page: #{page_uri}"
+    puts "DEBUG: Favicon URI: #{favicon_uri}"
+
+    # Favicon changed - try to save it for the current page
+    fetch_and_save_favicon(page_uri)
+  end
+
+  def fetch_and_save_favicon(page_uri)
+    return unless @favicon_db
+
+    # Get the favicon asynchronously from the database
+    @favicon_db.get_favicon(page_uri, nil) do |_object, result|
+      begin
+        surface = @favicon_db.get_favicon_finish(result)
+
+        if surface
+          puts "DEBUG: Got favicon surface for #{page_uri}"
+          save_favicon_data(page_uri, surface)
+        else
+          puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
+          # Try to get favicon from root domain as fallback
+          try_root_domain_favicon(page_uri)
+        end
+      rescue => e
+        if e.message.include?("Unknown favicon")
+          puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
+          try_root_domain_favicon(page_uri)
+        else
+          puts "DEBUG: Error getting favicon for #{page_uri}: #{e.message}"
+        end
+      end
+    end
+  end
+
+  def try_root_domain_favicon(page_uri)
+    return unless @favicon_db
+
+    begin
+      uri = URI.parse(page_uri)
+      root_uri = "#{uri.scheme}://#{uri.host}/"
+
+      return if root_uri == page_uri  # Already tried root domain
+
+      puts "DEBUG: Trying favicon from #{root_uri}"
+
+      @favicon_db.get_favicon(root_uri, nil) do |_object, result|
+        begin
+          surface = @favicon_db.get_favicon_finish(result)
+
+          if surface
+            puts "DEBUG: Got root domain favicon for #{page_uri}"
+            save_favicon_data(page_uri, surface)
+          else
+            puts "DEBUG: No root domain favicon available for #{page_uri}"
+          end
+        rescue => e
+          puts "DEBUG: Error getting root domain favicon: #{e.message}"
+        end
+      end
+    rescue URI::InvalidURIError => e
+      puts "DEBUG: Invalid URI for root domain lookup: #{e.message}"
+    end
+  end
+
+  def save_favicon_data(page_uri, surface)
+    favicon_data = surface_to_png(surface)
+
+    if favicon_data
+      puts "DEBUG: Saving favicon data (#{favicon_data.bytesize} bytes) for #{page_uri}"
+      @history_manager.update_favicon(page_uri, favicon_data)
+      refresh_history
+    else
+      puts "DEBUG: Failed to convert favicon to PNG for #{page_uri}"
+    end
+  end
+
+  def surface_to_png(surface)
+    return nil unless surface
+
+    # Create a temporary file to write the PNG
+    require 'tempfile'
+    temp = Tempfile.new(['favicon', '.png'])
+    temp.close
+
+    begin
+      # Write surface to PNG file
+      surface.write_to_png(temp.path)
+
+      # Read the PNG data
+      png_data = File.binread(temp.path)
+      png_data
+    rescue => e
+      warn "Failed to convert favicon: #{e.message}"
+      nil
+    ensure
+      temp.unlink
     end
   end
 
@@ -214,6 +336,11 @@ class BrowserWindow < Gtk::Window
       cookies_file,
       :sqlite
     )
+
+    # Set up favicon database
+    favicon_dir = File.join(data_dir, 'favicons')
+    FileUtils.mkdir_p(favicon_dir)
+    context.set_favicon_database_directory(favicon_dir)
 
     context
   end
@@ -262,11 +389,20 @@ class BrowserWindow < Gtk::Window
   def create_history_row(visit)
     row = Gtk::ListBoxRow.new
 
-    box = Gtk::Box.new(:vertical, 2)
-    box.margin_top = 8
-    box.margin_bottom = 8
-    box.margin_start = 12
-    box.margin_end = 12
+    # Horizontal box for favicon + text content
+    hbox = Gtk::Box.new(:horizontal, 8)
+    hbox.margin_top = 8
+    hbox.margin_bottom = 8
+    hbox.margin_start = 12
+    hbox.margin_end = 12
+
+    # Favicon
+    favicon_image = create_favicon_image(visit['favicon'])
+    favicon_image.valign = :start
+    hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
+
+    # Vertical box for text content
+    vbox = Gtk::Box.new(:vertical, 2)
 
     # Title
     title = visit['visit_title'] || visit['page_title'] || visit['uri']
@@ -274,7 +410,7 @@ class BrowserWindow < Gtk::Window
     title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
     title_label.halign = :start
     title_label.ellipsize = :end
-    box.pack_start(title_label, expand: false, fill: false, padding: 0)
+    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
 
     # URL
     url_label = Gtk::Label.new(visit['uri'])
@@ -282,18 +418,43 @@ class BrowserWindow < Gtk::Window
     url_label.ellipsize = :middle
     url_label.max_width_chars = 40
     url_label.style_context.add_class("dim-label")
-    box.pack_start(url_label, expand: false, fill: false, padding: 0)
+    vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
 
     # Time ago
     time_ago = format_time_ago(visit['visited_at'])
     time_label = Gtk::Label.new(time_ago)
     time_label.halign = :start
     time_label.style_context.add_class("dim-label")
-    box.pack_start(time_label, expand: false, fill: false, padding: 0)
+    vbox.pack_start(time_label, expand: false, fill: false, padding: 0)
 
-    row.add(box)
+    hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
+
+    row.add(hbox)
     @row_data[row] = visit  # Store visit data in hash
     row
+  end
+
+  def create_favicon_image(favicon_data)
+    if favicon_data && !favicon_data.empty?
+      begin
+        # Load PNG data into a pixbuf
+        loader = GdkPixbuf::PixbufLoader.new
+        loader.write(favicon_data)
+        loader.close
+        pixbuf = loader.pixbuf
+
+        # Scale to 16x16
+        if pixbuf
+          scaled = pixbuf.scale_simple(16, 16, :bilinear)
+          return Gtk::Image.new(pixbuf: scaled)
+        end
+      rescue => e
+        warn "Failed to load favicon: #{e.message}"
+      end
+    end
+
+    # Default icon if no favicon or error
+    Gtk::Image.new(icon_name: "text-html", size: :menu)
   end
 
   def format_time_ago(timestamp)
@@ -331,6 +492,10 @@ class BrowserWindow < Gtk::Window
         unless @last_recorded_visit == visit_key
           @history_manager.record_visit(uri, title)
           @last_recorded_visit = visit_key
+
+          # Try to fetch favicon for this page
+          fetch_and_save_favicon(uri)
+
           refresh_history
         end
       end
