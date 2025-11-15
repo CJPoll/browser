@@ -27,6 +27,13 @@ class BrowserWindow < Gtk::Window
     @zen_mode = false
     @sidebar_visible_before_zen = true
 
+    # Track last recorded visit to avoid duplicates
+    @last_recorded_visit = nil
+
+    # Dark mode state
+    gtk_settings = Gtk::Settings.default
+    @dark_mode = gtk_settings.get_property("gtk-application-prefer-dark-theme")
+
     # Create layout
     vbox = ::Gtk::Box.new(:vertical, 0)
     add(vbox)
@@ -78,6 +85,7 @@ class BrowserWindow < Gtk::Window
     web_context = create_web_context
     @webview = WebKit2Gtk::WebView.new(context: web_context)
     @webview.signal_connect("notify::uri") { on_uri_changed }
+    @webview.signal_connect("notify::title") { on_title_changed }
     @webview.signal_connect("load-changed") { |_webview, load_event| on_load_changed(load_event) }
 
     scrolled = Gtk::ScrolledWindow.new
@@ -106,6 +114,10 @@ class BrowserWindow < Gtk::Window
         when Gdk::Keyval::KEY_b
           # Ctrl+B: Toggle sidebar (unless in zen mode)
           toggle_sidebar unless @zen_mode
+          true  # Event handled
+        when Gdk::Keyval::KEY_d
+          # Ctrl+D: Toggle dark mode
+          toggle_dark_mode
           true  # Event handled
         when Gdk::Keyval::KEY_r
           # Ctrl+R: Refresh page
@@ -156,7 +168,28 @@ class BrowserWindow < Gtk::Window
 
   def on_uri_changed
     uri = @webview.uri
-    @url_entry.text = uri if uri
+    return unless uri
+
+    # Update URL bar only
+    # Don't record history here - wait for title to load in on_title_changed
+    @url_entry.text = uri
+  end
+
+  def on_title_changed
+    # When title changes (e.g., YouTube video loads after URL change),
+    # record/update the visit with the new title
+    uri = @webview.uri
+    title = @webview.title
+
+    if uri && !uri.empty? && title && !title.empty?
+      # Only record if this is a different URI or title than last recorded
+      visit_key = "#{uri}|#{title}"
+      unless @last_recorded_visit == visit_key
+        @history_manager.record_visit(uri, title)
+        @last_recorded_visit = visit_key
+        refresh_history
+      end
+    end
   end
 
   def on_back
@@ -293,8 +326,13 @@ class BrowserWindow < Gtk::Window
       title = @webview.title
 
       if uri && !uri.empty?
-        @history_manager.record_visit(uri, title)
-        refresh_history
+        # Only record if this is a different URI or title than last recorded
+        visit_key = "#{uri}|#{title}"
+        unless @last_recorded_visit == visit_key
+          @history_manager.record_visit(uri, title)
+          @last_recorded_visit = visit_key
+          refresh_history
+        end
       end
     end
   end
@@ -336,6 +374,16 @@ class BrowserWindow < Gtk::Window
 
       @zen_mode = true
     end
+  end
+
+  def toggle_dark_mode
+    @dark_mode = !@dark_mode
+
+    # Toggle GTK theme variant (affects browser UI)
+    gtk_settings = Gtk::Settings.default
+    gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
+
+    puts @dark_mode ? "🌙 Dark mode enabled" : "☀️  Light mode enabled"
   end
 end
 
