@@ -18,47 +18,60 @@ class BrowserWindow < Gtk::Window
     # Hash to store visit data for each row
     @row_data = {}
 
+    # Sidebar state
+    @sidebar_visible = true
+    @sidebar_width = 300
+
+    # Zen mode state
+    @zen_mode = false
+    @sidebar_visible_before_zen = true
+
     # Create layout
     vbox = ::Gtk::Box.new(:vertical, 0)
     add(vbox)
 
     # Toolbar
-    toolbar = ::Gtk::Box.new(:horizontal, 5)
-    toolbar.margin_top = 5
-    toolbar.margin_bottom = 5
-    toolbar.margin_start = 5
-    toolbar.margin_end = 5
-    vbox.pack_start(toolbar, expand: false, fill: false, padding: 0)
+    @toolbar = ::Gtk::Box.new(:horizontal, 5)
+    @toolbar.margin_top = 5
+    @toolbar.margin_bottom = 5
+    @toolbar.margin_start = 5
+    @toolbar.margin_end = 5
+    vbox.pack_start(@toolbar, expand: false, fill: false, padding: 0)
+
+    # Sidebar toggle button
+    @sidebar_toggle = ::Gtk::Button.new(label: "☰")
+    @sidebar_toggle.signal_connect("clicked") { toggle_sidebar }
+    @toolbar.pack_start(@sidebar_toggle, expand: false, fill: false, padding: 0)
 
     # Back button
     @back_button = ::Gtk::Button.new(label: "⬅")
     @back_button.signal_connect("clicked") { on_back }
-    toolbar.pack_start(@back_button, expand: false, fill: false, padding: 0)
+    @toolbar.pack_start(@back_button, expand: false, fill: false, padding: 0)
 
     # Forward button
     @forward_button = ::Gtk::Button.new(label: "➡")
     @forward_button.signal_connect("clicked") { on_forward }
-    toolbar.pack_start(@forward_button, expand: false, fill: false, padding: 0)
+    @toolbar.pack_start(@forward_button, expand: false, fill: false, padding: 0)
 
     # URL entry
     @url_entry = ::Gtk::Entry.new
     @url_entry.text = "https://www.example.com"
     @url_entry.signal_connect("activate") { on_load_url }
-    toolbar.pack_start(@url_entry, expand: true, fill: true, padding: 0)
+    @toolbar.pack_start(@url_entry, expand: true, fill: true, padding: 0)
 
     # Go button
     go_button = ::Gtk::Button.new(label: "Go")
     go_button.signal_connect("clicked") { on_load_url }
-    toolbar.pack_start(go_button, expand: false, fill: false, padding: 0)
+    @toolbar.pack_start(go_button, expand: false, fill: false, padding: 0)
 
     # Horizontal paned for sidebar and content
-    paned = Gtk::Paned.new(:horizontal)
-    vbox.pack_start(paned, expand: true, fill: true, padding: 0)
+    @paned = Gtk::Paned.new(:horizontal)
+    vbox.pack_start(@paned, expand: true, fill: true, padding: 0)
 
     # Left sidebar for history
     @sidebar = create_sidebar
-    paned.pack1(@sidebar, resize: false, shrink: false)
-    paned.set_position(300)  # Sidebar width
+    @paned.pack1(@sidebar, resize: false, shrink: true)
+    @paned.set_position(@sidebar_width)  # Sidebar width
 
     # WebView
     @webview = WebKit2Gtk::WebView.new
@@ -67,7 +80,7 @@ class BrowserWindow < Gtk::Window
 
     scrolled = Gtk::ScrolledWindow.new
     scrolled.add(@webview)
-    paned.pack2(scrolled, resize: true, shrink: false)
+    @paned.pack2(scrolled, resize: true, shrink: false)
 
     # Load initial page
     @webview.load_uri("https://www.example.com")
@@ -77,13 +90,33 @@ class BrowserWindow < Gtk::Window
 
     # Keyboard shortcuts
     signal_connect("key-press-event") do |widget, event|
-      # Ctrl+L: Focus and select URL bar
-      if event.state.control_mask? && event.keyval == Gdk::Keyval::KEY_l
-        @url_entry.grab_focus
-        @url_entry.select_region(0, -1)
-        true  # Event handled
+      if event.state.control_mask?
+        case event.keyval
+        when Gdk::Keyval::KEY_l
+          # Ctrl+L: Focus and select URL bar
+          # In zen mode, show toolbar temporarily
+          if @zen_mode
+            @toolbar.show_all
+          end
+          @url_entry.grab_focus
+          @url_entry.select_region(0, -1)
+          true  # Event handled
+        when Gdk::Keyval::KEY_b
+          # Ctrl+B: Toggle sidebar (unless in zen mode)
+          toggle_sidebar unless @zen_mode
+          true  # Event handled
+        else
+          false  # Event not handled
+        end
       else
-        false  # Event not handled
+        case event.keyval
+        when Gdk::Keyval::KEY_F11
+          # F11: Toggle zen mode
+          toggle_zen_mode
+          true  # Event handled
+        else
+          false  # Event not handled
+        end
       end
     end
   end
@@ -92,6 +125,11 @@ class BrowserWindow < Gtk::Window
     url = @url_entry.text
     url = "https://#{url}" unless url.start_with?("http://", "https://")
     @webview.load_uri(url)
+
+    # In zen mode, hide toolbar after submitting URL
+    if @zen_mode
+      @toolbar.hide
+    end
   end
 
   def on_uri_changed
@@ -218,6 +256,45 @@ class BrowserWindow < Gtk::Window
         @history_manager.record_visit(uri, title)
         refresh_history
       end
+    end
+  end
+
+  def toggle_sidebar
+    if @sidebar_visible
+      # Hide sidebar
+      @sidebar.hide
+      @paned.set_position(0)
+      @sidebar_visible = false
+    else
+      # Show sidebar
+      @sidebar.show_all
+      @paned.set_position(@sidebar_width)
+      @sidebar_visible = true
+    end
+  end
+
+  def toggle_zen_mode
+    if @zen_mode
+      # Exit zen mode - show toolbar and restore sidebar state
+      @toolbar.show_all
+      if @sidebar_visible_before_zen
+        @sidebar.show_all
+        @paned.set_position(@sidebar_width)
+        @sidebar_visible = true
+      end
+      @zen_mode = false
+    else
+      # Enter zen mode - hide toolbar and sidebar
+      @sidebar_visible_before_zen = @sidebar_visible
+      @toolbar.hide
+
+      if @sidebar_visible
+        @sidebar.hide
+        @paned.set_position(0)
+        @sidebar_visible = false
+      end
+
+      @zen_mode = true
     end
   end
 end
