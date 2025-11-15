@@ -3,6 +3,7 @@
 require 'gtk3'
 require 'webkit2-gtk'
 require 'cgi'
+require 'fileutils'
 require_relative 'history_manager'
 
 class BrowserWindow < Gtk::Window
@@ -73,8 +74,9 @@ class BrowserWindow < Gtk::Window
     @paned.pack1(@sidebar, resize: false, shrink: true)
     @paned.set_position(@sidebar_width)  # Sidebar width
 
-    # WebView
-    @webview = WebKit2Gtk::WebView.new
+    # WebView with persistent storage
+    web_context = create_web_context
+    @webview = WebKit2Gtk::WebView.new(context: web_context)
     @webview.signal_connect("notify::uri") { on_uri_changed }
     @webview.signal_connect("load-changed") { |_webview, load_event| on_load_changed(load_event) }
 
@@ -105,6 +107,10 @@ class BrowserWindow < Gtk::Window
           # Ctrl+B: Toggle sidebar (unless in zen mode)
           toggle_sidebar unless @zen_mode
           true  # Event handled
+        when Gdk::Keyval::KEY_r
+          # Ctrl+R: Refresh page
+          @webview.reload
+          true  # Event handled
         else
           false  # Event not handled
         end
@@ -117,6 +123,22 @@ class BrowserWindow < Gtk::Window
         else
           false  # Event not handled
         end
+      end
+    end
+
+    # Mouse button shortcuts (back/forward buttons)
+    signal_connect("button-press-event") do |widget, event|
+      case event.button
+      when 4
+        # Mouse back button
+        @webview.go_back if @webview.can_go_back?
+        true  # Event handled
+      when 5
+        # Mouse forward button
+        @webview.go_forward if @webview.can_go_forward?
+        true  # Event handled
+      else
+        false  # Event not handled
       end
     end
   end
@@ -143,6 +165,24 @@ class BrowserWindow < Gtk::Window
 
   def on_forward
     @webview.go_forward
+  end
+
+  def create_web_context
+    # Get the default web context
+    context = WebKit2Gtk::WebContext.default
+
+    # Set up persistent cookie storage
+    data_dir = File.join(Dir.home, '.local/share/toy-browser')
+    FileUtils.mkdir_p(data_dir)
+
+    cookies_file = File.join(data_dir, 'cookies.sqlite')
+    cookie_manager = context.cookie_manager
+    cookie_manager.set_persistent_storage(
+      cookies_file,
+      :sqlite
+    )
+
+    context
   end
 
   def create_sidebar
