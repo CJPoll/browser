@@ -1,0 +1,6 @@
+#! /usr/bin/env bash
+
+export PATH="${ASDF_DATA_DIR:-/home/cjpoll/.asdf}/shims:/home/cjpoll/bin/:$PATH"
+cd ~/dev/browser/ruby-browser-gtk3/
+echo $(ruby --version) > logs/ruby-version.log
+bundle exec ruby simple_browser.rb "${@}"

@@ -9,10 +9,17 @@ A toy web browser built with Ruby, GTK3, and WebKitGTK. Features include browsin
 ## Running the Browser
 
 ```bash
-bundle exec ruby simple_browser.rb
+./run
 ```
 
-The browser will start with a 1200x768 window loading example.com.
+Or directly with bundle exec:
+```bash
+bundle exec ruby simple_browser.rb [URL]
+```
+
+The `run` script ensures asdf environment is available (needed for launching from desktop environment). Optional URL argument opens that URL directly.
+
+The browser will start with a 1200x768 window. If no URL provided, it restores the previous session or opens example.com.
 
 ## Architecture
 
@@ -40,6 +47,32 @@ The browser will start with a 1200x768 window loading example.com.
   - Currently supports direct video URLs only
   - Native WebKit PiP API not available in WebKitGTK
 
+- **`run`**: Wrapper script for launching browser
+  - Sets up asdf environment (Ruby version manager)
+  - Required for launching from desktop environment (xdg-open, desktop files)
+  - Passes arguments to simple_browser.rb
+
+### Single-Instance Behavior
+
+The browser uses GTK Application with `HANDLES_COMMAND_LINE` and `HANDLES_OPEN` flags for single-instance behavior:
+
+- **First launch**: Creates window, handles URL argument if provided
+- **Subsequent launches**: Prevents duplicate processes, passes URLs to existing instance via IPC
+- **IPC mechanism**: File-based (`~/.local/share/toy-browser/pending-url`)
+  - Second instance writes URL + timestamp to IPC file
+  - First instance monitors file every 500ms via GLib::Timeout
+  - URLs open as new tabs in existing window
+- **Thread safety**: All UI updates via `GLib::Idle.add` from background threads
+
+### Default Browser Integration
+
+The browser can be set as the system's default browser:
+
+- **Desktop file**: `~/.local/share/applications/ruby-browser.desktop`
+- **Exec line**: Calls `run` script with `%u` (URL) parameter
+- **xdg-open**: Clicking links in terminal or other apps opens in browser
+- **IPC integration**: Links clicked while browser is running open as tabs, not new windows
+
 ### Data Storage
 
 - **History DB**: `~/.local/share/toy-browser/history.db`
@@ -56,6 +89,30 @@ The browser uses WebKit2GTK's web context and user content manager:
 - **Web Context**: Manages persistent storage (cookies, cache)
 - **User Content Manager**: Handles JavaScript injection for custom features
 - **JavaScript Injection**: Scripts injected on page load via `run_javascript()` since UserScript injection doesn't work reliably
+
+### Favicon Handling
+
+**Debouncing Strategy:**
+- Sites like YouTube provide multiple favicon sizes (5+ variants)
+- Without debouncing, each size triggers a separate database write
+- **Solution**: Hybrid debouncing approach
+  - Track largest favicon seen for each URL
+  - 300ms timer resets with each new favicon
+  - After 300ms silence, save only the largest favicon
+  - Reduces 8+ DB writes to 1 per page load
+
+**Implementation:**
+- Uses `GLib::Timeout.add(300)` for debounce timer
+- Stores candidates in `@favicon_candidates` hash (url → {size, surface})
+- Cancels previous timer when new larger favicon arrives
+- Converts Cairo surface to PNG for storage
+
+### Sidebar Behavior
+
+- **Width**: Always starts at 15% of window width
+- **Not persisted**: Width resets on each window creation
+- **User adjustable**: Can be resized during session, but doesn't save
+- **Single map event**: Sidebar width only set on first window map to prevent resizing when presenting window
 
 ### WebKit Experimental Features
 
@@ -119,14 +176,32 @@ The queue is a FIFO (first-in-first-out) list for managing URLs you want to read
 **Queue Sidebar:**
 - Shows position (#1, #2, etc.), title, URL, and favicon for each entry
 - Click any entry to navigate to it
+- **Active entry highlighting**: Current page highlighted in queue (if present)
 - Remove button (×) on each entry
-- Automatically refreshes when queue is modified
+- Automatically refreshes when queue is modified or navigation occurs
+
+**Background Metadata Fetching:**
+- Queue entries added via right-click (link context menu) initially lack title/favicon
+- Background worker thread fetches metadata asynchronously
+  - Uses Ruby Thread + Thread::Queue (stdlib)
+  - Fetches page HTML, extracts title and favicon
+  - All UI updates via `GLib::Idle.add` for thread safety
+  - Graceful shutdown with poison pill pattern
+
+**URL Matching for Highlighting:**
+- Uses bidirectional subset matching to handle tracking parameters
+- Compares base URL (scheme, host, path) exactly
+- Query parameters: either URL's params can be subset of the other
+- Handles cases where:
+  - Queue URL has extra params (YouTube adds `&pp=xyz`, then strips them)
+  - Current URL has extra params (timestamp `&t=10s` added during playback)
+- Fragments (#...) and trailing slashes ignored
 
 **Implementation Notes:**
 - Queue entries have integer positions that are renumbered when items are removed or reordered
 - QueueManager handles all database operations with transactions for consistency
 - Maximum capacity: thousands of entries (SQLite-backed)
-- Future: May add categories/tags (read/watch/do) or support multiple queues
+- UTF-8 encoding enforced via SQLite `PRAGMA encoding = 'UTF-8'`
 
 ### Keyboard Shortcuts
 
@@ -190,3 +265,20 @@ The queue is a FIFO (first-in-first-out) list for managing URLs you want to read
 - Ruby managed via asdf (version 3.3.0)
 - WebKitGTK version: 2.48.5
 - Follows user's global CLAUDE.md principles (avoid system changes without permission, prefer clarity and single-responsibility)
+
+### GTK Event Handling Gotchas
+
+**Keyboard Shortcut Precedence:**
+- GTK checks event handlers in order of registration
+- Modifier combinations must exclude other modifiers explicitly
+- Example: `Ctrl+Q` handler must check `!event.state.mod1_mask?` to avoid intercepting `Ctrl+Alt+Q`
+- Without exclusion, broader conditions (e.g., `control_mask?`) match before specific ones
+
+**Correct Pattern:**
+```ruby
+if event.state.control_mask? && !event.state.mod1_mask?  # Ctrl only, not Ctrl+Alt
+  # Handle Ctrl+Q
+elsif event.state.control_mask? && event.state.mod1_mask?  # Ctrl+Alt
+  # Handle Ctrl+Alt+Q
+end
+```

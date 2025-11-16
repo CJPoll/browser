@@ -1,5 +1,18 @@
 #!/usr/bin/env ruby
 
+# Capture ARGV before GTK Application consumes it
+ORIGINAL_ARGV = ARGV.dup
+
+# IPC file for passing URLs between instances
+IPC_DIR = File.join(Dir.home, '.local/share/toy-browser')
+FileUtils.mkdir_p(IPC_DIR)
+IPC_URL_FILE = File.join(IPC_DIR, 'pending-url')
+
+# If we have a URL argument, write it to the IPC file
+if ORIGINAL_ARGV.length > 0 && !ORIGINAL_ARGV[0].empty?
+  File.write(IPC_URL_FILE, "#{ORIGINAL_ARGV[0]}\n#{Time.now.to_f}")
+end
+
 require 'gtk3'
 require 'webkit2-gtk'
 require 'cgi'
@@ -221,29 +234,27 @@ class BrowserWindow < Gtk::Window
       if @sidebar_visible && @paned.position > 0
         # Ignore the first change after we manually set the position
         if @paned_position_set
-          old_width = @sidebar_width
           @sidebar_width = @paned.position
-          if old_width != @sidebar_width
-            puts "DEBUG: Paned position changed: #{old_width} -> #{@sidebar_width}"
-          end
         end
       end
     end
 
-    # Set the sidebar width AFTER the window is shown and GTK has done layout
+    # Set the sidebar width AFTER the window is shown and GTK has done layout (only on first map)
+    @initial_map_done = false
     signal_connect("map-event") do
-      # Calculate sidebar width based on actual window width and saved ratio
-      window_width = allocation.width
-      @sidebar_width = (window_width * @sidebar_width_ratio).to_i
-      puts "DEBUG: Window mapped (width: #{window_width}), setting paned position to: #{@sidebar_width} (ratio: #{@sidebar_width_ratio})"
-      @paned.set_position(@sidebar_width)
-      @paned_position_set = true
+      unless @initial_map_done
+        # Calculate sidebar width based on window width (always 15%)
+        window_width = allocation.width
+        @sidebar_width = (window_width * @sidebar_width_ratio).to_i
+        @paned.set_position(@sidebar_width)
+        @paned_position_set = true
+        @initial_map_done = true
+      end
       false
     end
 
     # Save settings when window is closing
     signal_connect("delete-event") do
-      puts "DEBUG: Window closing, saving sidebar width: #{@sidebar_width}"
       save_settings
       false  # Allow the window to close
     end
@@ -268,21 +279,27 @@ class BrowserWindow < Gtk::Window
     @webview_container = Gtk::ScrolledWindow.new
     @paned.pack2(@webview_container, resize: true, shrink: false)
 
-    # Restore session if available, otherwise create initial tab
-    session = load_session
-    if session && session['tabs'] && !session['tabs'].empty?
-      # Restore tabs from session
-      session['tabs'].each do |tab_url|
-        create_new_tab(tab_url)
-      end
+    # Only restore session if no URL was passed as argument
+    if ORIGINAL_ARGV.empty?
+      # Restore session if available, otherwise create initial tab
+      session = load_session
+      if session && session['tabs'] && !session['tabs'].empty?
+        # Restore tabs from session
+        session['tabs'].each do |tab_url|
+          create_new_tab(tab_url)
+        end
 
-      # Restore current tab index
-      if session['current_tab_index'] && session['current_tab_index'] < @tabs.length
-        switch_to_tab(session['current_tab_index'])
+        # Restore current tab index
+        if session['current_tab_index'] && session['current_tab_index'] < @tabs.length
+          switch_to_tab(session['current_tab_index'])
+        end
+      else
+        # Create initial tab
+        create_new_tab("https://www.example.com")
       end
     else
-      # Create initial tab
-      create_new_tab("https://www.example.com")
+      # URL will be opened by command-line handler, just create a placeholder
+      create_new_tab("about:blank")
     end
 
     # Populate tabs in sidebar
@@ -1294,7 +1311,8 @@ class BrowserWindow < Gtk::Window
       @queue_list.add(row)
 
       # Highlight the queue entry that matches the current tab's URL
-      if current_url && entry['url'] == current_url
+      # Use fuzzy matching: queue URL params must be subset of current URL params
+      if current_url && entry['url'] && urls_match?(entry['url'], current_url)
         @queue_list.select_row(row)
       end
     end
@@ -1304,6 +1322,38 @@ class BrowserWindow < Gtk::Window
     # Update sidebar header with count
     if @sidebar_mode == :queue
       @sidebar_header.markup = "<b>Queue (#{entries.length})</b>"
+    end
+  end
+
+  def urls_match?(queue_url, current_url)
+    # Parse both URLs
+    begin
+      queue_uri = URI.parse(queue_url)
+      current_uri = URI.parse(current_url)
+    rescue URI::InvalidURIError
+      return false
+    end
+
+    # Compare base URLs (scheme, host, path) - ignore trailing slashes
+    queue_base = "#{queue_uri.scheme}://#{queue_uri.host}#{queue_uri.path}".sub(/\/$/, '')
+    current_base = "#{current_uri.scheme}://#{current_uri.host}#{current_uri.path}".sub(/\/$/, '')
+    return false unless queue_base == current_base
+
+    # Parse query parameters
+    queue_params = queue_uri.query ? CGI.parse(queue_uri.query) : {}
+    current_params = current_uri.query ? CGI.parse(current_uri.query) : {}
+
+    # Check if either URL's params are a subset of the other
+    # This handles both cases:
+    # 1. Queue has extra params (YouTube strips them) - current is subset of queue
+    # 2. Current has extra params - queue is subset of current
+    params_are_subset?(queue_params, current_params) || params_are_subset?(current_params, queue_params)
+  end
+
+  def params_are_subset?(subset_params, superset_params)
+    # Check if all params in subset exist in superset with same values
+    subset_params.all? do |key, values|
+      superset_params[key] == values
     end
   end
 
@@ -1819,41 +1869,27 @@ class BrowserWindow < Gtk::Window
 
     # Default settings
     @dark_mode = false
-    @sidebar_width_ratio = 0.25  # 25% of window width
+    @sidebar_width_ratio = 0.15  # Always start at 15% of window width
 
     if File.exist?(settings_file)
       begin
         settings = JSON.parse(File.read(settings_file))
         @dark_mode = settings['dark_mode'] || false
-        @sidebar_width_ratio = settings['sidebar_width_ratio'] || 0.25
-        puts "DEBUG: Loaded sidebar width ratio from settings: #{@sidebar_width_ratio}"
       rescue => e
         puts "Failed to load settings: #{e.message}"
       end
-    else
-      puts "DEBUG: No settings file, using default ratio: #{@sidebar_width_ratio}"
     end
   end
 
   def save_settings
     settings_file = File.join(@data_dir, 'settings.json')
 
-    # Calculate ratio based on current window width
-    window_width = allocation.width
-    if window_width > 0 && @sidebar_visible
-      @sidebar_width_ratio = @sidebar_width.to_f / window_width.to_f
-      @sidebar_width_ratio = [@sidebar_width_ratio, 0.1].max  # Min 10%
-      @sidebar_width_ratio = [@sidebar_width_ratio, 0.5].min  # Max 50%
-    end
-
     settings = {
-      'dark_mode' => @dark_mode,
-      'sidebar_width_ratio' => @sidebar_width_ratio
+      'dark_mode' => @dark_mode
     }
 
     begin
       File.write(settings_file, JSON.pretty_generate(settings))
-      puts "DEBUG: Saved sidebar width ratio: #{@sidebar_width_ratio}"
     rescue => e
       puts "Failed to save settings: #{e.message}"
     end
@@ -2044,12 +2080,101 @@ class BrowserWindow < Gtk::Window
 end
 
 # Main application
-app = Gtk::Application.new("com.example.browser", :flags_none)
+app = Gtk::Application.new("com.example.browser", Gio::ApplicationFlags::HANDLES_OPEN | Gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+
+# Store reference to the main window
+main_window = nil
 
 app.signal_connect "activate" do |application|
-  win = BrowserWindow.new
-  win.set_application(application)
-  win.show_all
+  if main_window.nil?
+    # First launch - create new window
+    main_window = BrowserWindow.new
+    main_window.set_application(application)
+    main_window.show_all
+
+    # Set up IPC file monitoring for URLs from other instances
+    last_ipc_check = Time.now.to_f
+    GLib::Timeout.add(500) do  # Check every 500ms
+      if File.exist?(IPC_URL_FILE)
+        begin
+          content = File.read(IPC_URL_FILE)
+          url, timestamp = content.split("\n")
+          timestamp = timestamp.to_f
+
+          # Only process if this is a new URL (timestamp after last check)
+          if timestamp > last_ipc_check
+            main_window.create_new_tab(url)
+            main_window.present
+            last_ipc_check = timestamp
+            # Delete the file after processing
+            File.delete(IPC_URL_FILE)
+          end
+        rescue => e
+          warn "Error reading IPC file: #{e.message}"
+        end
+      end
+      true  # Continue timer
+    end
+  else
+    # Window already exists - just present it
+    main_window.present
+  end
+end
+
+app.signal_connect "command-line" do |application, command_line|
+  # Get or create the main window
+  if main_window.nil?
+    application.activate
+  end
+
+  # Check if a URL was passed in ORIGINAL_ARGV
+  if ORIGINAL_ARGV.length > 0 && !ORIGINAL_ARGV[0].to_s.empty?
+    url = ORIGINAL_ARGV[0]
+    begin
+      tabs = main_window.instance_variable_get(:@tabs)
+      first_tab_uri = tabs.first&.uri
+
+      # If the first tab is about:blank, navigate it to the URL instead of creating a new tab
+      if first_tab_uri == "about:blank"
+        tabs.first.webview.load_uri(url)
+      else
+        # Otherwise create a new tab
+        main_window.create_new_tab(url)
+      end
+
+      # Clear ORIGINAL_ARGV so we don't re-open it on next signal
+      ORIGINAL_ARGV.clear
+    rescue => e
+      warn "Error loading URL: #{e.message}"
+    end
+  end
+
+  # Bring window to front
+  main_window.present if main_window
+
+  0  # Return status code
+end
+
+app.signal_connect "open" do |application, files, hint|
+  # Get or create the main window
+  if main_window.nil?
+    main_window = BrowserWindow.new
+    main_window.set_application(application)
+    main_window.show_all
+  end
+
+  # Open each file/URL as a new tab
+  files.each do |file|
+    url = file.uri
+    begin
+      main_window.create_new_tab(url)
+    rescue => e
+      warn "Error creating tab: #{e.message}"
+    end
+  end
+
+  # Bring window to front
+  main_window.present
 end
 
 app.run
