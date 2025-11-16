@@ -6,6 +6,7 @@ require 'cgi'
 require 'fileutils'
 require 'json'
 require_relative 'history_manager'
+require_relative 'video_popout_window'
 
 class Tab
   attr_reader :webview, :list_box_row
@@ -19,9 +20,46 @@ class Tab
     @favicon_db = favicon_db
     @list_box_row = nil  # Will be set when added to sidebar
 
-    # Enable developer tools
+    # Enable developer tools and experimental features
     settings = @webview.settings
     settings.enable_developer_extras = true
+
+    # Enable experimental features for modern web compatibility
+    begin
+      experimental_features = WebKit2Gtk::Settings.experimental_features
+
+      # OPFS support (needed for 1Password and similar apps)
+      opfs_features = ['StorageAPI', 'FileSystemAccess', 'FileSystemWritableStream', 'AccessHandle']
+
+      # Standard features enabled by default in Safari
+      safari_standard = ['PopoverAttribute', 'WebShareFileAPI', 'ViewTransitions',
+                         'CSSUnprefixedBackdropFilter', 'ServiceWorkers', 'CSSContentVisibility']
+
+      # Cross-browser standard features
+      cross_browser_standard = ['BroadcastChannel', 'CompressionStream', 'CSSOMViewSmoothScrolling',
+                                'LazyImageLoading', 'Notifications', 'PermissionsAPI',
+                                'WebLocksAPI', 'URLPatternAPI']
+
+      features_to_enable = opfs_features + safari_standard + cross_browser_standard
+
+      features_to_enable.each do |feature_id|
+        # Find the feature by iterating through the FeatureList
+        feature = nil
+        (0...experimental_features.length).each do |i|
+          f = experimental_features.get(i)
+          if f.identifier == feature_id
+            feature = f
+            break
+          end
+        end
+
+        if feature
+          settings.set_feature_enabled(feature, true)
+        end
+      end
+    rescue => e
+      warn "Could not enable experimental features: #{e.message}"
+    end
 
     # Connect signals
     setup_signals
@@ -221,6 +259,10 @@ class BrowserWindow < Gtk::Window
           # Ctrl+Shift+R: Reload browser code
           reload_browser
           true  # Event handled
+        when Gdk::Keyval::KEY_P
+          # Ctrl+Shift+P: Video popout
+          open_video_popout
+          true  # Event handled
         when Gdk::Keyval::KEY_Tab, Gdk::Keyval::KEY_ISO_Left_Tab
           # Ctrl+Shift+Tab: Previous tab
           previous_tab
@@ -316,17 +358,28 @@ class BrowserWindow < Gtk::Window
 
     # Mouse button shortcuts (back/forward buttons)
     signal_connect("button-press-event") do |widget, event|
+      # Debug: Show ALL button presses to see what we're getting
+      puts "DEBUG: Mouse button pressed: #{event.button}"
+
       case event.button
-      when 4
-        # Mouse back button
+      when 4, 6, 8
+        # Mouse back button (trying 4, 6, and 8)
+        puts "DEBUG: Back button detected (button #{event.button})"
         if current_tab && current_tab.webview.can_go_back?
           current_tab.webview.go_back
+          puts "DEBUG: Navigated back"
+        else
+          puts "DEBUG: Cannot go back"
         end
         true  # Event handled
-      when 5
-        # Mouse forward button
+      when 5, 7, 9
+        # Mouse forward button (trying 5, 7, and 9)
+        puts "DEBUG: Forward button detected (button #{event.button})"
         if current_tab && current_tab.webview.can_go_forward?
           current_tab.webview.go_forward
+          puts "DEBUG: Navigated forward"
+        else
+          puts "DEBUG: Cannot go forward"
         end
         true  # Event handled
       else
@@ -497,6 +550,30 @@ class BrowserWindow < Gtk::Window
     tab.webview.signal_connect("load-changed") do |_webview, load_event|
       next unless current_tab == tab
       on_load_changed(load_event)
+    end
+
+    # Handle mouse button events on the WebView
+    tab.webview.signal_connect("button-press-event") do |_webview, event|
+      next false unless current_tab == tab
+
+      case event.button
+      when 4, 6, 8
+        if tab.webview.can_go_back?
+          tab.webview.go_back
+          true
+        else
+          false
+        end
+      when 5, 7, 9
+        if tab.webview.can_go_forward?
+          tab.webview.go_forward
+          true
+        else
+          false
+        end
+      else
+        false
+      end
     end
 
     # Handle Ctrl+Click to open links in new tab
@@ -1155,6 +1232,23 @@ class BrowserWindow < Gtk::Window
       new_window = BrowserWindow.new
       new_window.set_application(app)
       new_window.show_all
+    end
+  end
+
+  def open_video_popout
+    return unless current_tab
+
+    # Get the current URL
+    url = current_tab.uri
+    return unless url
+
+    # Only works for YouTube videos currently
+    if url.include?("youtube.com/watch")
+      popout = VideoPopoutWindow.new(url, @web_context)
+      popout.set_application(self.application) if self.application
+      puts "📺 Video popout opened for: #{url}"
+    else
+      puts "⚠️  Video popout currently only works with YouTube videos"
     end
   end
 
