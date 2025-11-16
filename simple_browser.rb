@@ -6,6 +6,7 @@ require 'cgi'
 require 'fileutils'
 require 'json'
 require_relative 'history_manager'
+require_relative 'queue_manager'
 require_relative 'video_popout_window'
 
 class Tab
@@ -96,6 +97,9 @@ class BrowserWindow < Gtk::Window
     # Initialize history manager
     @history_manager = HistoryManager.new
 
+    # Initialize queue manager
+    @queue_manager = QueueManager.new
+
     # Data directory
     @data_dir = File.join(Dir.home, '.local/share/toy-browser')
     FileUtils.mkdir_p(@data_dir)
@@ -109,7 +113,7 @@ class BrowserWindow < Gtk::Window
 
     # Sidebar state
     @sidebar_visible = true
-    @sidebar_mode = :tabs  # Can be :tabs or :history
+    @sidebar_mode = :tabs  # Can be :tabs, :history, or :queue
 
     # Zen mode state
     @zen_mode = false
@@ -263,17 +267,33 @@ class BrowserWindow < Gtk::Window
           # Ctrl+Shift+P: Video popout
           open_video_popout
           true  # Event handled
+        when Gdk::Keyval::KEY_Q
+          # Ctrl+Shift+Q: Add current tab to queue
+          add_current_tab_to_queue
+          true  # Event handled
         when Gdk::Keyval::KEY_Tab, Gdk::Keyval::KEY_ISO_Left_Tab
-          # Ctrl+Shift+Tab: Previous tab
-          previous_tab
+          # Ctrl+Shift+Tab: Previous tab (or previous queue item if queue sidebar is open)
+          if @sidebar_visible && @sidebar_mode == :queue
+            navigate_to_previous_queue_item
+          else
+            previous_tab
+          end
           true  # Event handled
         when Gdk::Keyval::KEY_Page_Down
-          # Ctrl+Shift+PageDown: Move tab down in list
-          move_tab_down
+          # Ctrl+Shift+PageDown: Move tab down (or move current page down in queue if queue sidebar is open)
+          if @sidebar_visible && @sidebar_mode == :queue
+            move_current_page_down_in_queue
+          else
+            move_tab_down
+          end
           true  # Event handled
         when Gdk::Keyval::KEY_Page_Up
-          # Ctrl+Shift+PageUp: Move tab up in list
-          move_tab_up
+          # Ctrl+Shift+PageUp: Move tab up (or move current page up in queue if queue sidebar is open)
+          if @sidebar_visible && @sidebar_mode == :queue
+            move_current_page_up_in_queue
+          else
+            move_tab_up
+          end
           true  # Event handled
         else
           false  # Event not handled
@@ -313,6 +333,10 @@ class BrowserWindow < Gtk::Window
           # Ctrl+H: Show history in sidebar
           show_history_sidebar
           true  # Event handled
+        when Gdk::Keyval::KEY_q
+          # Ctrl+Q: Show queue in sidebar
+          show_queue_sidebar
+          true  # Event handled
         when Gdk::Keyval::KEY_e
           # Ctrl+E: Show tabs in sidebar
           show_tabs_sidebar
@@ -322,8 +346,12 @@ class BrowserWindow < Gtk::Window
           open_new_window
           true  # Event handled
         when Gdk::Keyval::KEY_Tab
-          # Ctrl+Tab: Next tab
-          next_tab
+          # Ctrl+Tab: Next tab (or next queue item if queue sidebar is open)
+          if @sidebar_visible && @sidebar_mode == :queue
+            navigate_to_next_queue_item
+          else
+            next_tab
+          end
           true  # Event handled
         when Gdk::Keyval::KEY_bracketleft
           # Ctrl+[: Back
@@ -336,6 +364,16 @@ class BrowserWindow < Gtk::Window
           if current_tab && current_tab.webview.can_go_forward?
             current_tab.webview.go_forward
           end
+          true  # Event handled
+        else
+          false  # Event not handled
+        end
+      elsif event.state.control_mask? && event.state.mod1_mask?
+        # Ctrl+Alt combinations
+        case event.keyval
+        when Gdk::Keyval::KEY_q
+          # Ctrl+Alt+Q: Remove current URL from queue and navigate to next
+          remove_from_queue_and_next
           true  # Event handled
         else
           false  # Event not handled
@@ -610,6 +648,51 @@ class BrowserWindow < Gtk::Window
         false  # Not a navigation action, let it proceed
       end
     end
+
+    # Handle context menu to add custom options for links
+    tab.webview.signal_connect("context-menu") do |_webview, context_menu, event, hit_test_result|
+      # Check if we right-clicked on a link
+      if hit_test_result.link_uri
+        link_uri = hit_test_result.link_uri
+
+        # "Add to Queue" action
+        queue_action = Gio::SimpleAction.new("add-to-queue-#{link_uri.hash.abs}", nil)
+        queue_action.signal_connect("activate") do
+          # Add the link to the queue
+          result = @queue_manager.add(link_uri, nil, nil)
+
+          case result
+          when :added
+            puts "Added to queue: #{link_uri}"
+            # Refresh queue if visible
+            refresh_queue if @sidebar_mode == :queue
+          when :already_exists
+            puts "Already in queue: #{link_uri}"
+          when :invalid_url
+            warn "Cannot add invalid URL to queue"
+          end
+        end
+
+        queue_item = WebKit2Gtk::ContextMenuItem.new(queue_action, "Add to Queue", nil)
+        context_menu.prepend(queue_item)
+
+        # "Open Link in New Tab" action
+        open_tab_action = Gio::SimpleAction.new("open-in-new-tab-#{link_uri.hash.abs}", nil)
+        open_tab_action.signal_connect("activate") do
+          create_new_tab(link_uri, switch_to: false)
+          puts "Opened in new tab: #{link_uri}"
+        end
+
+        open_tab_item = WebKit2Gtk::ContextMenuItem.new(open_tab_action, "Open Link in New Tab", nil)
+        context_menu.prepend(open_tab_item)
+
+        # Add separator after our custom items
+        separator = WebKit2Gtk::ContextMenuItem.new()
+        context_menu.insert(separator, 2)
+      end
+
+      false  # Let the default menu show
+    end
   end
 
   def on_load_url
@@ -852,7 +935,11 @@ class BrowserWindow < Gtk::Window
     @history_list.selection_mode = :single
     @history_list.signal_connect("row-activated") { |_list, row| on_history_item_clicked(row) }
 
-    # Container to hold either tabs or history list
+    @queue_list = Gtk::ListBox.new
+    @queue_list.selection_mode = :single
+    @queue_list.signal_connect("row-activated") { |_list, row| on_queue_item_clicked(row) }
+
+    # Container to hold tabs, history, or queue list
     @sidebar_content = Gtk::Box.new(:vertical, 0)
     @sidebar_content.pack_start(@tabs_list, expand: true, fill: true, padding: 0)
 
@@ -1050,6 +1137,399 @@ class BrowserWindow < Gtk::Window
     visit = row.instance_variable_get(:@visit_data)
     if visit && current_tab
       current_tab.webview.load_uri(visit['uri'])
+    end
+  end
+
+  def show_queue_sidebar
+    # Show sidebar if it's hidden
+    if !@sidebar_visible
+      @sidebar_visible = true
+      @sidebar.show_all
+      @paned.set_position(@sidebar_width)
+    end
+
+    return if @sidebar_mode == :queue
+
+    @sidebar_mode = :queue
+    @sidebar_header.markup = "<b>Queue (#{@queue_manager.count})</b>"
+
+    # Clear sidebar content
+    @sidebar_content.children.each { |child| @sidebar_content.remove(child) }
+
+    # Add queue list
+    @sidebar_content.pack_start(@queue_list, expand: true, fill: true, padding: 0)
+    @sidebar_content.show_all
+
+    # Refresh queue
+    refresh_queue
+  end
+
+  def refresh_queue
+    # Clear existing items
+    @queue_list.children.each { |child| @queue_list.remove(child) }
+
+    # Get all queue entries
+    entries = @queue_manager.all
+
+    entries.each do |entry|
+      row = create_queue_row(entry)
+      @queue_list.add(row)
+    end
+
+    @queue_list.show_all
+
+    # Update sidebar header with count
+    if @sidebar_mode == :queue
+      @sidebar_header.markup = "<b>Queue (#{entries.length})</b>"
+    end
+  end
+
+  def create_queue_row(entry)
+    row = Gtk::ListBoxRow.new
+
+    # Horizontal box for favicon + text content + actions
+    hbox = Gtk::Box.new(:horizontal, 8)
+    hbox.margin_top = 8
+    hbox.margin_bottom = 8
+    hbox.margin_start = 12
+    hbox.margin_end = 12
+
+    # Favicon
+    favicon_image = create_favicon_image(entry['favicon'])
+    favicon_image.valign = :start
+    hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
+
+    # Vertical box for text content
+    vbox = Gtk::Box.new(:vertical, 2)
+
+    # Title
+    title = entry['title'] || entry['url']
+    title_label = Gtk::Label.new
+    title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
+    title_label.halign = :start
+    title_label.ellipsize = :end
+    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
+
+    # URL
+    url_label = Gtk::Label.new(entry['url'])
+    url_label.halign = :start
+    url_label.ellipsize = :middle
+    url_label.max_width_chars = 40
+    url_label.style_context.add_class("dim-label")
+    vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
+
+    # Position indicator
+    position_label = Gtk::Label.new("##{entry['position']}")
+    position_label.halign = :start
+    position_label.style_context.add_class("dim-label")
+    vbox.pack_start(position_label, expand: false, fill: false, padding: 0)
+
+    hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
+
+    # Remove button
+    remove_button = Gtk::Button.new(label: "×")
+    remove_button.relief = :none
+    remove_button.signal_connect("clicked") do
+      @queue_manager.remove_by_id(entry['id'])
+      refresh_queue
+      true  # Stop event propagation
+    end
+    hbox.pack_start(remove_button, expand: false, fill: false, padding: 0)
+
+    # Wrap in EventBox to enable mouse events for drag-and-drop
+    event_box = Gtk::EventBox.new
+    event_box.add(hbox)
+    event_box.visible_window = false  # Transparent event box
+
+    row.add(event_box)
+
+    # Store entry data in the row and event_box
+    row.instance_variable_set(:@queue_entry, entry)
+    event_box.instance_variable_set(:@queue_entry, entry)
+    event_box.instance_variable_set(:@parent_row, row)
+
+    # Set up drag-and-drop for reordering on the event_box
+    setup_queue_row_drag_and_drop(event_box)
+
+    row
+  end
+
+  def setup_queue_row_drag_and_drop(widget)
+    # Create target entry for drag-and-drop using standard text target
+    # "TEXT" is a recognized text type that works with set_text/get_text
+    target_entry = Gtk::TargetEntry.new("TEXT", :same_app, 0)
+
+    # Set up as drag source
+    widget.drag_source_set(
+      Gdk::ModifierType::BUTTON1_MASK,
+      [target_entry],
+      Gdk::DragAction::MOVE
+    )
+
+    # Set up as drag destination
+    # Use MOTION and HIGHLIGHT but NOT DROP - we handle drop manually to avoid conflicts
+    widget.drag_dest_set(
+      Gtk::DestDefaults::MOTION | Gtk::DestDefaults::HIGHLIGHT,
+      [target_entry],
+      Gdk::DragAction::MOVE
+    )
+
+    # Store reference to browser window
+    browser_window = self
+
+    # Handle drag data get (provide the data when dragging)
+    widget.signal_connect("drag-data-get") do |w, context, selection_data, info, time|
+      entry = w.instance_variable_get(:@queue_entry)
+      if entry
+        # Send the entry ID as plain text
+        selection_data.text = entry['id'].to_s
+      end
+    end
+
+    # Handle drag drop
+    widget.signal_connect("drag-drop") do |w, context, x, y, time|
+      # Request the drag data - this will trigger drag-data-received
+      target = Gdk::Atom.intern("TEXT", false)
+      w.drag_get_data(context, target, time)
+      true
+    end
+
+    # Handle drag data received (handle the drop)
+    widget.signal_connect("drag-data-received") do |w, context, x, y, selection_data, info, time|
+      # Get the dropped entry ID
+      dropped_id_text = selection_data.text
+
+      if dropped_id_text && !dropped_id_text.empty?
+        dropped_entry_id = dropped_id_text.to_i
+        target_entry = w.instance_variable_get(:@queue_entry)
+
+        if target_entry && dropped_entry_id != target_entry['id']
+          # Move the dropped entry to the target position
+          if browser_window.queue_manager.move(dropped_entry_id, target_entry['position'])
+            # Refresh the queue to show the new order
+            browser_window.refresh_queue
+
+            # Find and select the moved row
+            browser_window.queue_list.children.each do |child|
+              child_entry = child.instance_variable_get(:@queue_entry)
+              if child_entry && child_entry['id'] == dropped_entry_id
+                browser_window.queue_list.select_row(child)
+                break
+              end
+            end
+          end
+        end
+      end
+
+      # Finish the drag operation
+      context.finish(true, false, time)
+    end
+  end
+
+  # Expose queue_manager and queue_list for drag-and-drop callbacks
+  attr_reader :queue_manager, :queue_list
+
+  def on_queue_item_clicked(row)
+    entry = row.instance_variable_get(:@queue_entry)
+    if entry && current_tab
+      current_tab.webview.load_uri(entry['url'])
+    end
+  end
+
+  def add_current_tab_to_queue
+    return unless current_tab
+
+    url = current_tab.uri
+    title = current_tab.title
+    favicon_data = current_tab.favicon_data
+
+    result = @queue_manager.add(url, title, favicon_data)
+
+    case result
+    when :added
+      # Show notification or update queue if visible
+      if @sidebar_mode == :queue
+        refresh_queue
+      end
+      puts "Added to queue: #{title}"
+    when :already_exists
+      puts "Already in queue: #{title}"
+    when :invalid_url
+      warn "Cannot add invalid URL to queue"
+    end
+  end
+
+  def remove_from_queue_and_next
+    return unless current_tab
+
+    url = current_tab.uri
+
+    # Remove current URL from queue and get the next entry
+    next_entry = @queue_manager.remove_by_url(url)
+
+    # Refresh queue if visible
+    if @sidebar_mode == :queue
+      refresh_queue
+    end
+
+    # Navigate to next entry if it exists
+    if next_entry
+      current_tab.webview.load_uri(next_entry['url'])
+      puts "Removed from queue, navigating to: #{next_entry['title'] || next_entry['url']}"
+    else
+      puts "Removed from queue, no more entries"
+    end
+  end
+
+  def move_selected_queue_entry_up
+    # Only works when queue sidebar is visible
+    return unless @sidebar_mode == :queue
+
+    # Get the currently selected row
+    selected_row = @queue_list.selected_row
+    return unless selected_row
+
+    # Get the entry data
+    entry = selected_row.instance_variable_get(:@queue_entry)
+    return unless entry
+
+    # Move up in the queue
+    if @queue_manager.move_up(entry['id'])
+      # Refresh the queue
+      refresh_queue
+
+      # Find and select the row that now contains this entry
+      @queue_list.children.each do |row|
+        row_entry = row.instance_variable_get(:@queue_entry)
+        if row_entry && row_entry['id'] == entry['id']
+          @queue_list.select_row(row)
+          break
+        end
+      end
+
+      puts "Moved up: #{entry['title'] || entry['url']}"
+    end
+  end
+
+  def move_selected_queue_entry_down
+    # Only works when queue sidebar is visible
+    return unless @sidebar_mode == :queue
+
+    # Get the currently selected row
+    selected_row = @queue_list.selected_row
+    return unless selected_row
+
+    # Get the entry data
+    entry = selected_row.instance_variable_get(:@queue_entry)
+    return unless entry
+
+    # Move down in the queue
+    if @queue_manager.move_down(entry['id'])
+      # Refresh the queue
+      refresh_queue
+
+      # Find and select the row that now contains this entry
+      @queue_list.children.each do |row|
+        row_entry = row.instance_variable_get(:@queue_entry)
+        if row_entry && row_entry['id'] == entry['id']
+          @queue_list.select_row(row)
+          break
+        end
+      end
+
+      puts "Moved down: #{entry['title'] || entry['url']}"
+    end
+  end
+
+  def navigate_to_next_queue_item
+    # Only works when queue sidebar is visible
+    return unless @sidebar_mode == :queue && current_tab
+
+    current_url = current_tab.webview.uri
+    return unless current_url
+
+    # Get all queue entries
+    entries = @queue_manager.all
+    return if entries.empty?
+
+    # Find current URL in queue
+    current_index = entries.find_index { |e| e['url'] == current_url }
+
+    if current_index
+      # Navigate to next entry (wrap around to first if at end)
+      next_index = (current_index + 1) % entries.length
+      next_entry = entries[next_index]
+    else
+      # Current URL not in queue, navigate to first entry
+      next_entry = entries.first
+    end
+
+    # Navigate to the next entry
+    current_tab.webview.load_uri(next_entry['url'])
+    puts "Navigated to next queue item: #{next_entry['title'] || next_entry['url']}"
+  end
+
+  def navigate_to_previous_queue_item
+    # Only works when queue sidebar is visible
+    return unless @sidebar_mode == :queue && current_tab
+
+    current_url = current_tab.webview.uri
+    return unless current_url
+
+    # Get all queue entries
+    entries = @queue_manager.all
+    return if entries.empty?
+
+    # Find current URL in queue
+    current_index = entries.find_index { |e| e['url'] == current_url }
+
+    if current_index
+      # Navigate to previous entry (wrap around to last if at beginning)
+      prev_index = (current_index - 1) % entries.length
+      prev_entry = entries[prev_index]
+    else
+      # Current URL not in queue, navigate to last entry
+      prev_entry = entries.last
+    end
+
+    # Navigate to the previous entry
+    current_tab.webview.load_uri(prev_entry['url'])
+    puts "Navigated to previous queue item: #{prev_entry['title'] || prev_entry['url']}"
+  end
+
+  def move_current_page_up_in_queue
+    # Only works when queue sidebar is visible
+    return unless @sidebar_mode == :queue && current_tab
+
+    current_url = current_tab.webview.uri
+    return unless current_url
+
+    # Find the current URL in the queue
+    entry = @queue_manager.find_by_url(current_url)
+    return unless entry
+
+    # Move up in the queue
+    if @queue_manager.move_up(entry['id'])
+      refresh_queue
+      puts "Moved current page up in queue: #{entry['title'] || entry['url']}"
+    end
+  end
+
+  def move_current_page_down_in_queue
+    # Only works when queue sidebar is visible
+    return unless @sidebar_mode == :queue && current_tab
+
+    current_url = current_tab.webview.uri
+    return unless current_url
+
+    # Find the current URL in the queue
+    entry = @queue_manager.find_by_url(current_url)
+    return unless entry
+
+    # Move down in the queue
+    if @queue_manager.move_down(entry['id'])
+      refresh_queue
+      puts "Moved current page down in queue: #{entry['title'] || entry['url']}"
     end
   end
 

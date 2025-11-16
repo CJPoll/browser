@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A toy web browser built with Ruby, GTK3, and WebKitGTK. Features include browsing history, persistent cookies, Picture-in-Picture (in development), zen mode, and keyboard shortcuts.
+A toy web browser built with Ruby, GTK3, and WebKitGTK. Features include browsing history, read/watch/do queue, persistent cookies, Picture-in-Picture (in development), zen mode, and keyboard shortcuts.
 
 ## Running the Browser
 
@@ -29,6 +29,12 @@ The browser will start with a 1200x768 window loading example.com.
   - Stores data in `~/.local/share/toy-browser/history.db`
   - Tracks visit timestamps, titles, and visit counts
 
+- **`queue_manager.rb`**: SQLite-based read/watch/do queue
+  - FIFO queue with reordering capabilities
+  - Stores data in `~/.local/share/toy-browser/queue.db`
+  - Prevents duplicate URLs
+  - Supports thousands of entries with efficient position management
+
 - **`pip_window.rb`**: Picture-in-Picture floating window (WIP)
   - Creates always-on-top window for video playback
   - Currently supports direct video URLs only
@@ -37,6 +43,7 @@ The browser will start with a 1200x768 window loading example.com.
 ### Data Storage
 
 - **History DB**: `~/.local/share/toy-browser/history.db`
+- **Queue DB**: `~/.local/share/toy-browser/queue.db`
 - **Cookies**: `~/.local/share/toy-browser/cookies.sqlite`
 - **Cache**: `~/.cache/toy-browser/`
 
@@ -97,23 +104,67 @@ If a web app fails with "undefined is not a function" errors in the console:
 - Use `get(index)` to access features, not array indexing
 - Feature identifiers are case-sensitive (e.g., "FileSystemAccess" not "FileSystemAccessAPI")
 
+### Read/Watch/Do Queue
+
+The queue is a FIFO (first-in-first-out) list for managing URLs you want to read, watch, or process later.
+
+**Features:**
+- **Add to queue**: Current tab (`Ctrl+Shift+Q`) or right-click any link
+- **View queue**: Sidebar view (`Ctrl+Q`) shows all queued URLs with position indicators
+- **Remove and navigate**: `Ctrl+Alt+Q` removes current URL from queue and loads the next one
+- **Reorder**: Select an entry in the queue sidebar and use `Ctrl+Shift+M/N` to move it up/down
+- **Duplicate prevention**: Adding a URL already in the queue shows a message instead
+- **Persistence**: Queue stored in SQLite, survives browser restarts
+
+**Queue Sidebar:**
+- Shows position (#1, #2, etc.), title, URL, and favicon for each entry
+- Click any entry to navigate to it
+- Remove button (×) on each entry
+- Automatically refreshes when queue is modified
+
+**Implementation Notes:**
+- Queue entries have integer positions that are renumbered when items are removed or reordered
+- QueueManager handles all database operations with transactions for consistency
+- Maximum capacity: thousands of entries (SQLite-backed)
+- Future: May add categories/tags (read/watch/do) or support multiple queues
+
 ### Keyboard Shortcuts
 
+**Navigation:**
 - `Ctrl+L`: Focus URL bar
-- `Ctrl+B`: Toggle sidebar
-- `Ctrl+R`: Refresh page
-- `Ctrl+Shift+P`: Video popout (YouTube only)
-- `Ctrl+Shift+R`: Reload browser with latest code
+- `Ctrl+[` / `Ctrl+]`: Back/forward navigation
+- Mouse buttons 8/9: Back/forward navigation
+
+**Tabs:**
 - `Ctrl+N`: New window
 - `Ctrl+T`: New tab
 - `Ctrl+W`: Close tab
-- `Ctrl+Tab` / `Ctrl+Shift+Tab`: Next/previous tab
-- `Ctrl+[` / `Ctrl+]`: Back/forward navigation
-- `Ctrl+H` / `Ctrl+E`: Show history/tabs in sidebar
-- `Ctrl+Shift+PageUp/PageDown`: Reorder current tab
+- `Ctrl+Tab`: Next tab (or next queue item when queue sidebar is open)
+- `Ctrl+Shift+Tab`: Previous tab (or previous queue item when queue sidebar is open)
+- `Ctrl+Shift+PageUp`: Move tab up in list (or move current page up in queue when queue sidebar is open)
+- `Ctrl+Shift+PageDown`: Move tab down in list (or move current page down in queue when queue sidebar is open)
+
+**Sidebar:**
+- `Ctrl+B`: Toggle sidebar
+- `Ctrl+H`: Show history in sidebar
+- `Ctrl+E`: Show tabs in sidebar
+- `Ctrl+Q`: Show queue in sidebar
+
+**Queue Management:**
+- `Ctrl+Shift+Q`: Add current tab to queue
+- `Ctrl+Alt+Q`: Remove current URL from queue and navigate to next
+- Right-click link → "Add to Queue": Add link to queue
+- **Context-dependent shortcuts (when queue sidebar is open):**
+  - `Ctrl+Tab` / `Ctrl+Shift+Tab`: Navigate to next/previous queue item
+  - `Ctrl+Shift+PageUp/PageDown`: Move current page up/down in queue
+- **Drag-and-drop:** Reorder queue entries by dragging them in the queue sidebar
+
+**Other:**
+- `Ctrl+R`: Refresh page
+- `Ctrl+Shift+P`: Video popout (YouTube only)
+- `Ctrl+Shift+R`: Reload browser with latest code
 - `F11`: Toggle zen mode
 - `F12`: Toggle Web Inspector (dev tools)
-- Mouse buttons 4/5: Back/forward navigation
 
 ## Known Limitations
 
