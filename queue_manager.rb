@@ -9,6 +9,8 @@ class QueueManager
 
     @db = SQLite3::Database.new(db_path)
     @db.results_as_hash = true
+    # Force UTF-8 encoding for text columns
+    @db.execute("PRAGMA encoding = 'UTF-8'")
     create_tables
   end
 

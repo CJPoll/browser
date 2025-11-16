@@ -5,6 +5,8 @@ require 'webkit2-gtk'
 require 'cgi'
 require 'fileutils'
 require 'json'
+require 'net/http'
+require 'uri'
 require_relative 'history_manager'
 require_relative 'queue_manager'
 require_relative 'video_popout_window'
@@ -100,6 +102,11 @@ class BrowserWindow < Gtk::Window
     # Initialize queue manager
     @queue_manager = QueueManager.new
 
+    # Initialize background worker for fetching queue entry metadata
+    @favicon_fetch_queue = Thread::Queue.new
+    @favicon_worker_running = true
+    @favicon_worker = Thread.new { favicon_worker_loop }
+
     # Data directory
     @data_dir = File.join(Dir.home, '.local/share/toy-browser')
     FileUtils.mkdir_p(@data_dir)
@@ -121,6 +128,10 @@ class BrowserWindow < Gtk::Window
 
     # Track last recorded visit to avoid duplicates
     @last_recorded_visit = nil
+
+    # Favicon debouncing - track largest favicon per URL
+    @favicon_timers = {}      # url => GLib timeout source ID
+    @favicon_candidates = {}  # url => {size, surface}
 
     # Apply dark mode setting
     gtk_settings = Gtk::Settings.default
@@ -164,6 +175,29 @@ class BrowserWindow < Gtk::Window
     @url_entry = ::Gtk::Entry.new
     @url_entry.text = "https://www.example.com"
     @url_entry.signal_connect("activate") { on_load_url }
+
+    # Handle ESC key in URL entry
+    @url_entry.signal_connect("key-press-event") do |widget, event|
+      if event.keyval == Gdk::Keyval::KEY_Escape
+        # Restore current tab's URL
+        if current_tab && current_tab.webview.uri
+          @url_entry.text = current_tab.webview.uri
+        end
+
+        # In zen mode, hide toolbar after ESC
+        if @zen_mode
+          @toolbar.hide
+        end
+
+        # Remove focus from URL entry
+        current_tab.webview.grab_focus if current_tab
+
+        true  # Event handled
+      else
+        false  # Let other handlers process
+      end
+    end
+
     @toolbar.pack_start(@url_entry, expand: true, fill: true, padding: 0)
 
     # Go button
@@ -254,6 +288,18 @@ class BrowserWindow < Gtk::Window
     # Populate tabs in sidebar
     refresh_tabs
 
+    # Cleanup on window destroy
+    signal_connect("destroy") do
+      # Stop the background worker
+      @favicon_worker_running = false
+      @favicon_fetch_queue.push(nil)  # Unblock the worker if it's waiting
+      @favicon_worker.join(1) if @favicon_worker&.alive?  # Wait up to 1 second
+
+      # Save session and settings
+      save_session
+      save_settings
+    end
+
     # Keyboard shortcuts
     signal_connect("key-press-event") do |widget, event|
       if event.state.control_mask? && event.state.shift_mask?
@@ -298,7 +344,7 @@ class BrowserWindow < Gtk::Window
         else
           false  # Event not handled
         end
-      elsif event.state.control_mask?
+      elsif event.state.control_mask? && !event.state.mod1_mask?
         case event.keyval
         when Gdk::Keyval::KEY_l
           # Ctrl+L: Focus and select URL bar
@@ -666,6 +712,12 @@ class BrowserWindow < Gtk::Window
             puts "Added to queue: #{link_uri}"
             # Refresh queue if visible
             refresh_queue if @sidebar_mode == :queue
+
+            # Enqueue work for background worker to fetch title and favicon
+            entry = @queue_manager.find_by_url(link_uri)
+            if entry
+              @favicon_fetch_queue.push({id: entry['id'], url: link_uri})
+            end
           when :already_exists
             puts "Already in queue: #{link_uri}"
           when :invalid_url
@@ -730,6 +782,9 @@ class BrowserWindow < Gtk::Window
     # Don't record history here - wait for title to load in on_title_changed
     @url_entry.text = uri
     current_tab.uri = uri
+
+    # Update queue highlight if queue sidebar is visible
+    refresh_queue if @sidebar_mode == :queue
   end
 
   def on_title_changed
@@ -779,7 +834,37 @@ class BrowserWindow < Gtk::Window
 
         if surface
           puts "DEBUG: Got favicon surface for #{page_uri}"
-          save_favicon_data(page_uri, surface)
+          # Convert to PNG to check size
+          favicon_data = surface_to_png(surface)
+
+          if favicon_data
+            size = favicon_data.bytesize
+
+            # Track largest favicon seen for this URL
+            current_candidate = @favicon_candidates[page_uri]
+            if !current_candidate || size > current_candidate[:size]
+              puts "DEBUG: New largest favicon candidate: #{size} bytes (previous: #{current_candidate ? current_candidate[:size] : 0} bytes)"
+              @favicon_candidates[page_uri] = {size: size, surface: surface}
+            end
+
+            # Cancel previous timer if exists
+            if @favicon_timers[page_uri]
+              GLib::Source.remove(@favicon_timers[page_uri])
+            end
+
+            # Set debounce timer - save after 300ms of silence
+            @favicon_timers[page_uri] = GLib::Timeout.add(300) do
+              # Save the largest favicon we saw
+              candidate = @favicon_candidates[page_uri]
+              if candidate
+                puts "DEBUG: Debounce timer fired - saving favicon (#{candidate[:size]} bytes) for #{page_uri}"
+                save_favicon_data(page_uri, candidate[:surface])
+                @favicon_candidates.delete(page_uri)
+                @favicon_timers.delete(page_uri)
+              end
+              false  # Don't repeat
+            end
+          end
         else
           puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
           # Try to get favicon from root domain as fallback
@@ -951,14 +1036,20 @@ class BrowserWindow < Gtk::Window
   end
 
   def show_tabs_sidebar
+    # If already showing tabs sidebar, toggle it off
+    if @sidebar_visible && @sidebar_mode == :tabs
+      @sidebar.hide
+      @paned.set_position(0)
+      @sidebar_visible = false
+      return
+    end
+
     # Show sidebar if it's hidden
     if !@sidebar_visible
       @sidebar_visible = true
       @sidebar.show_all
       @paned.set_position(@sidebar_width)
     end
-
-    return if @sidebar_mode == :tabs
 
     @sidebar_mode = :tabs
     @sidebar_header.markup = "<b>Tabs</b>"
@@ -975,14 +1066,20 @@ class BrowserWindow < Gtk::Window
   end
 
   def show_history_sidebar
+    # If already showing history sidebar, toggle it off
+    if @sidebar_visible && @sidebar_mode == :history
+      @sidebar.hide
+      @paned.set_position(0)
+      @sidebar_visible = false
+      return
+    end
+
     # Show sidebar if it's hidden
     if !@sidebar_visible
       @sidebar_visible = true
       @sidebar.show_all
       @paned.set_position(@sidebar_width)
     end
-
-    return if @sidebar_mode == :history
 
     @sidebar_mode = :history
     @sidebar_header.markup = "<b>Browsing History</b>"
@@ -1141,14 +1238,20 @@ class BrowserWindow < Gtk::Window
   end
 
   def show_queue_sidebar
+    # If already showing queue sidebar, toggle it off
+    if @sidebar_visible && @sidebar_mode == :queue
+      @sidebar.hide
+      @paned.set_position(0)
+      @sidebar_visible = false
+      return
+    end
+
     # Show sidebar if it's hidden
     if !@sidebar_visible
       @sidebar_visible = true
       @sidebar.show_all
       @paned.set_position(@sidebar_width)
     end
-
-    return if @sidebar_mode == :queue
 
     @sidebar_mode = :queue
     @sidebar_header.markup = "<b>Queue (#{@queue_manager.count})</b>"
@@ -1171,9 +1274,17 @@ class BrowserWindow < Gtk::Window
     # Get all queue entries
     entries = @queue_manager.all
 
+    # Get current tab's URL for highlighting
+    current_url = current_tab&.webview&.uri
+
     entries.each do |entry|
       row = create_queue_row(entry)
       @queue_list.add(row)
+
+      # Highlight the queue entry that matches the current tab's URL
+      if current_url && entry['url'] == current_url
+        @queue_list.select_row(row)
+      end
     end
 
     @queue_list.show_all
@@ -1204,6 +1315,12 @@ class BrowserWindow < Gtk::Window
 
     # Title
     title = entry['title'] || entry['url']
+    # Ensure UTF-8 encoding for display
+    title = title.dup.force_encoding('UTF-8') if title
+    unless title.valid_encoding?
+      title = title.force_encoding('ISO-8859-1').encode('UTF-8', invalid: :replace, undef: :replace)
+    end
+
     title_label = Gtk::Label.new
     title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
     title_label.halign = :start
@@ -1744,6 +1861,111 @@ class BrowserWindow < Gtk::Window
 
     # Close this window (will quit the application)
     close
+  end
+
+  # Background worker loop for fetching queue entry metadata
+  def favicon_worker_loop
+    while @favicon_worker_running
+      item = @favicon_fetch_queue.pop
+      break if item.nil?  # Poison pill to stop worker
+
+      begin
+        fetch_queue_entry_metadata(item[:id], item[:url])
+      rescue => e
+        warn "Error fetching metadata for #{item[:url]}: #{e.message}"
+      end
+    end
+  end
+
+  # Fetch title and favicon for a queue entry
+  def fetch_queue_entry_metadata(entry_id, url)
+    uri = URI.parse(url)
+
+    # Fetch the page
+    response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
+                               open_timeout: 5, read_timeout: 5) do |http|
+      request = Net::HTTP::Get.new(uri)
+      request['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+      http.request(request)
+    end
+
+    return unless response.is_a?(Net::HTTPSuccess)
+
+    html = response.body
+    title = extract_title_from_html(html)
+    favicon_url = extract_favicon_url_from_html(html, uri)
+
+    # Fetch favicon if found
+    favicon_data = nil
+    if favicon_url
+      favicon_data = fetch_favicon(favicon_url)
+    else
+      # Try default /favicon.ico
+      default_favicon_url = "#{uri.scheme}://#{uri.host}/favicon.ico"
+      favicon_data = fetch_favicon(default_favicon_url)
+    end
+
+    # Update database (safe to do from background thread)
+    @queue_manager.update_title(url, title) if title
+    @queue_manager.update_favicon(url, favicon_data) if favicon_data
+
+    # Schedule UI refresh on main thread
+    GLib::Idle.add do
+      refresh_queue if @sidebar_mode == :queue
+      false  # Don't repeat
+    end
+  end
+
+  def extract_title_from_html(html)
+    # Simple regex to extract title
+    match = html.match(/<title[^>]*>(.*?)<\/title>/im)
+    return nil unless match
+
+    title = match[1].strip
+
+    # Ensure UTF-8 encoding, replacing invalid characters
+    title = title.force_encoding('UTF-8')
+    unless title.valid_encoding?
+      # Try different encodings
+      title = title.force_encoding('ISO-8859-1').encode('UTF-8', invalid: :replace, undef: :replace)
+    end
+
+    CGI.unescapeHTML(title)
+  end
+
+  def extract_favicon_url_from_html(html, base_uri)
+    # Look for <link rel="icon"> or <link rel="shortcut icon">
+    match = html.match(/<link[^>]*rel=["'](?:shortcut )?icon["'][^>]*href=["']([^"']+)["']/im)
+    return nil unless match
+
+    favicon_path = match[1]
+
+    # Make absolute URL if relative
+    if favicon_path.start_with?('http')
+      favicon_path
+    elsif favicon_path.start_with?('//')
+      "#{base_uri.scheme}:#{favicon_path}"
+    elsif favicon_path.start_with?('/')
+      "#{base_uri.scheme}://#{base_uri.host}#{favicon_path}"
+    else
+      "#{base_uri.scheme}://#{base_uri.host}/#{favicon_path}"
+    end
+  end
+
+  def fetch_favicon(favicon_url)
+    uri = URI.parse(favicon_url)
+
+    response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
+                               open_timeout: 3, read_timeout: 3) do |http|
+      request = Net::HTTP::Get.new(uri)
+      http.request(request)
+    end
+
+    return response.body if response.is_a?(Net::HTTPSuccess)
+    nil
+  rescue => e
+    # Silently fail for favicons
+    nil
   end
 
   def save_session
