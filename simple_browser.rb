@@ -411,6 +411,18 @@ class BrowserWindow < Gtk::Window
             current_tab.webview.go_forward
           end
           true  # Event handled
+        when Gdk::Keyval::KEY_equal, Gdk::Keyval::KEY_plus
+          # Ctrl+= or Ctrl++: Zoom in
+          zoom_in
+          true  # Event handled
+        when Gdk::Keyval::KEY_minus
+          # Ctrl+-: Zoom out
+          zoom_out
+          true  # Event handled
+        when Gdk::Keyval::KEY_0
+          # Ctrl+0: Reset zoom
+          reset_zoom
+          true  # Event handled
         else
           false  # Event not handled
         end
@@ -1775,6 +1787,31 @@ class BrowserWindow < Gtk::Window
     else
       inspector.show
     end
+  end
+
+  def zoom_in
+    return unless current_tab
+
+    current_zoom = current_tab.webview.zoom_level
+    new_zoom = [current_zoom + 0.1, 5.0].min  # Max 500%
+    current_tab.webview.zoom_level = new_zoom
+    puts "Zoom: #{(new_zoom * 100).round}%"
+  end
+
+  def zoom_out
+    return unless current_tab
+
+    current_zoom = current_tab.webview.zoom_level
+    new_zoom = [current_zoom - 0.1, 0.25].max  # Min 25%
+    current_tab.webview.zoom_level = new_zoom
+    puts "Zoom: #{(new_zoom * 100).round}%"
+  end
+
+  def reset_zoom
+    return unless current_tab
+
+    current_tab.webview.zoom_level = 1.0
+    puts "Zoom: 100%"
   end
 
   def load_settings

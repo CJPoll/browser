@@ -161,6 +161,9 @@ The queue is a FIFO (first-in-first-out) list for managing URLs you want to read
 
 **Other:**
 - `Ctrl+R`: Refresh page
+- `Ctrl++` / `Ctrl+=`: Zoom in
+- `Ctrl+-`: Zoom out
+- `Ctrl+0`: Reset zoom to 100%
 - `Ctrl+Shift+P`: Video popout (YouTube only)
 - `Ctrl+Shift+R`: Reload browser with latest code
 - `F11`: Toggle zen mode
