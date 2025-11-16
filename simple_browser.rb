@@ -19,6 +19,10 @@ class Tab
     @favicon_db = favicon_db
     @list_box_row = nil  # Will be set when added to sidebar
 
+    # Enable developer tools
+    settings = @webview.settings
+    settings.enable_developer_extras = true
+
     # Connect signals
     setup_signals
 
@@ -217,6 +221,18 @@ class BrowserWindow < Gtk::Window
           # Ctrl+Shift+R: Reload browser code
           reload_browser
           true  # Event handled
+        when Gdk::Keyval::KEY_Tab, Gdk::Keyval::KEY_ISO_Left_Tab
+          # Ctrl+Shift+Tab: Previous tab
+          previous_tab
+          true  # Event handled
+        when Gdk::Keyval::KEY_Page_Down
+          # Ctrl+Shift+PageDown: Move tab down in list
+          move_tab_down
+          true  # Event handled
+        when Gdk::Keyval::KEY_Page_Up
+          # Ctrl+Shift+PageUp: Move tab up in list
+          move_tab_up
+          true  # Event handled
         else
           false  # Event not handled
         end
@@ -263,6 +279,22 @@ class BrowserWindow < Gtk::Window
           # Ctrl+N: New window
           open_new_window
           true  # Event handled
+        when Gdk::Keyval::KEY_Tab
+          # Ctrl+Tab: Next tab
+          next_tab
+          true  # Event handled
+        when Gdk::Keyval::KEY_bracketleft
+          # Ctrl+[: Back
+          if current_tab && current_tab.webview.can_go_back?
+            current_tab.webview.go_back
+          end
+          true  # Event handled
+        when Gdk::Keyval::KEY_bracketright
+          # Ctrl+]: Forward
+          if current_tab && current_tab.webview.can_go_forward?
+            current_tab.webview.go_forward
+          end
+          true  # Event handled
         else
           false  # Event not handled
         end
@@ -271,6 +303,10 @@ class BrowserWindow < Gtk::Window
         when Gdk::Keyval::KEY_F11
           # F11: Toggle zen mode
           toggle_zen_mode
+          true  # Event handled
+        when Gdk::Keyval::KEY_F12
+          # F12: Toggle web inspector
+          toggle_inspector
           true  # Event handled
         else
           false  # Event not handled
@@ -325,6 +361,25 @@ class BrowserWindow < Gtk::Window
   def close_current_tab
     return if @tabs.empty?
 
+    # Get the tab to close
+    tab_to_close = @tabs[@current_tab_index]
+
+    # Stop the webview and clean up resources
+    if tab_to_close
+      # Stop loading any content
+      tab_to_close.webview.stop_loading
+
+      # Load about:blank to stop any JavaScript/media playback
+      tab_to_close.webview.load_uri("about:blank")
+
+      # Try to destroy the webview widget
+      begin
+        tab_to_close.webview.destroy if tab_to_close.webview.respond_to?(:destroy)
+      rescue => e
+        puts "DEBUG: Error destroying webview: #{e.message}"
+      end
+    end
+
     # Remove the tab
     @tabs.delete_at(@current_tab_index)
 
@@ -343,6 +398,54 @@ class BrowserWindow < Gtk::Window
     switch_to_tab(@current_tab_index)
 
     # Refresh tabs sidebar
+    refresh_tabs
+  end
+
+  def next_tab
+    return if @tabs.length <= 1
+
+    # Move to next tab with wrapping
+    @current_tab_index = (@current_tab_index + 1) % @tabs.length
+    switch_to_tab(@current_tab_index)
+    refresh_tabs
+  end
+
+  def previous_tab
+    return if @tabs.length <= 1
+
+    # Move to previous tab with wrapping
+    @current_tab_index = (@current_tab_index - 1) % @tabs.length
+    switch_to_tab(@current_tab_index)
+    refresh_tabs
+  end
+
+  def move_tab_up
+    return if @tabs.length <= 1
+    return if @current_tab_index == 0  # Already at the top, no wrapping
+
+    # Swap current tab with the one above it
+    @tabs[@current_tab_index], @tabs[@current_tab_index - 1] =
+      @tabs[@current_tab_index - 1], @tabs[@current_tab_index]
+
+    # Update current index to follow the tab
+    @current_tab_index -= 1
+
+    # Refresh tabs sidebar to show new order
+    refresh_tabs
+  end
+
+  def move_tab_down
+    return if @tabs.length <= 1
+    return if @current_tab_index == @tabs.length - 1  # Already at the bottom, no wrapping
+
+    # Swap current tab with the one below it
+    @tabs[@current_tab_index], @tabs[@current_tab_index + 1] =
+      @tabs[@current_tab_index + 1], @tabs[@current_tab_index]
+
+    # Update current index to follow the tab
+    @current_tab_index += 1
+
+    # Refresh tabs sidebar to show new order
     refresh_tabs
   end
 
@@ -435,8 +538,21 @@ class BrowserWindow < Gtk::Window
   def on_load_url
     return unless current_tab
 
-    url = @url_entry.text
-    url = "https://#{url}" unless url.start_with?("http://", "https://")
+    text = @url_entry.text.strip
+
+    # Check if it looks like a URL (has a TLD and no spaces)
+    # or if it already starts with a protocol
+    if text.start_with?("http://", "https://")
+      url = text
+    elsif text.match?(/^[\w-]+\.[\w.-]+/) && !text.include?(' ')
+      # Looks like a domain (e.g., "example.com" or "github.com")
+      url = "https://#{text}"
+    else
+      # Treat as a search query
+      query = CGI.escape(text)
+      url = "https://www.google.com/search?q=#{query}"
+    end
+
     current_tab.webview.load_uri(url)
 
     # In zen mode, hide toolbar after submitting URL
@@ -603,13 +719,24 @@ class BrowserWindow < Gtk::Window
   end
 
   def create_web_context
+    # Set up data directories
+    data_dir = File.join(Dir.home, '.local/share/toy-browser')
+    cache_dir = File.join(Dir.home, '.cache/toy-browser')
+
+    FileUtils.mkdir_p(data_dir)
+    FileUtils.mkdir_p(cache_dir)
+
     # Get the default web context
     context = WebKit2Gtk::WebContext.default
 
-    # Set up persistent cookie storage
-    data_dir = File.join(Dir.home, '.local/share/toy-browser')
-    FileUtils.mkdir_p(data_dir)
+    # Check what directories the data manager is using
+    data_manager = context.website_data_manager
+    puts "DEBUG: Base data directory: #{data_manager.base_data_directory}"
+    puts "DEBUG: Base cache directory: #{data_manager.base_cache_directory}"
+    puts "DEBUG: Local storage directory: #{data_manager.local_storage_directory}"
+    puts "DEBUG: IndexedDB directory: #{data_manager.indexeddb_directory}"
 
+    # Set up persistent cookie storage
     cookies_file = File.join(data_dir, 'cookies.sqlite')
     cookie_manager = context.cookie_manager
     cookie_manager.set_persistent_storage(
@@ -963,6 +1090,17 @@ class BrowserWindow < Gtk::Window
     save_settings
 
     puts @dark_mode ? "🌙 Dark mode enabled" : "☀️  Light mode enabled"
+  end
+
+  def toggle_inspector
+    return unless current_tab
+
+    inspector = current_tab.webview.inspector
+    if inspector.attached?
+      inspector.close
+    else
+      inspector.show
+    end
   end
 
   def load_settings
