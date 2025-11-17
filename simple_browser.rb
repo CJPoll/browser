@@ -32,6 +32,11 @@ require_relative 'lib/tab'
 require_relative 'lib/ui/tab_list_view'
 require_relative 'lib/ui/history_list_view'
 require_relative 'lib/ui/queue_list_view'
+require_relative 'lib/ui/toolbar'
+require_relative 'lib/ui/sidebar'
+require_relative 'lib/handlers/navigation_handler'
+require_relative 'lib/handlers/mouse_handler'
+require_relative 'lib/handlers/keyboard_handler'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -49,7 +54,7 @@ class BrowserWindow < Gtk::Window
     # Initialize background worker for fetching queue entry metadata
     @queue_metadata_worker = QueueMetadataWorker.new(@queue_manager)
     @queue_metadata_worker.on_metadata_fetched = -> {
-      refresh_queue if @sidebar_mode == :queue
+      @sidebar_component.refresh_current_view if @sidebar_component.mode == :queue
     }
 
     # Data directory
@@ -61,14 +66,6 @@ class BrowserWindow < Gtk::Window
     @session_manager = SessionManager.new(data_dir: @data_dir)
     @dark_mode = @settings_manager.dark_mode
     @sidebar_width_ratio = 0.15  # Always 15%, not persisted
-
-    # Calculate initial sidebar width from ratio (using default window width)
-    # This will be recalculated when the window is actually shown
-    @sidebar_width = (1200 * @sidebar_width_ratio).to_i
-
-    # Sidebar state
-    @sidebar_visible = true
-    @sidebar_mode = :tabs  # Can be :tabs, :history, or :queue
 
     # Zen mode state
     @zen_mode = false
@@ -93,61 +90,39 @@ class BrowserWindow < Gtk::Window
     add(vbox)
 
     # Toolbar
-    @toolbar = ::Gtk::Box.new(:horizontal, 5)
-    @toolbar.margin_top = 5
-    @toolbar.margin_bottom = 5
-    @toolbar.margin_start = 5
-    @toolbar.margin_end = 5
+    toolbar_callbacks = {
+      on_sidebar_toggle: -> { toggle_sidebar },
+      on_back: -> { on_back },
+      on_forward: -> { on_forward },
+      on_load_url: -> { @navigation_handler.navigate_to(@url_entry.text) },
+      get_current_tab: -> { current_tab },  # Safe: nil during init, but callbacks only fire during user interaction
+      in_zen_mode: -> { @zen_mode }
+    }
+    @toolbar_component = Toolbar.new(toolbar_callbacks)
+    @toolbar = @toolbar_component.widget
+    @url_entry = @toolbar_component.url_entry
+
+    # Navigation handler
+    navigation_callbacks = {
+      get_current_tab: -> { current_tab },
+      in_zen_mode: -> { @zen_mode },
+      get_toolbar: -> { @toolbar }
+    }
+    @navigation_handler = NavigationHandler.new(navigation_callbacks)
+
+    # Mouse handler
+    mouse_callbacks = {
+      get_current_tab: -> { current_tab },
+      create_new_tab: ->(uri, switch_to:) { create_new_tab(uri, switch_to: switch_to) }
+    }
+    @mouse_handler = MouseHandler.new(mouse_callbacks)
+
+    # Pack toolbar into main layout
     vbox.pack_start(@toolbar, expand: false, fill: false, padding: 0)
 
-    # Sidebar toggle button
-    @sidebar_toggle = ::Gtk::Button.new(label: "☰")
-    @sidebar_toggle.signal_connect("clicked") { toggle_sidebar }
-    @toolbar.pack_start(@sidebar_toggle, expand: false, fill: false, padding: 0)
-
-    # Back button
-    @back_button = ::Gtk::Button.new(label: "⬅")
-    @back_button.signal_connect("clicked") { on_back }
-    @toolbar.pack_start(@back_button, expand: false, fill: false, padding: 0)
-
-    # Forward button
-    @forward_button = ::Gtk::Button.new(label: "➡")
-    @forward_button.signal_connect("clicked") { on_forward }
-    @toolbar.pack_start(@forward_button, expand: false, fill: false, padding: 0)
-
-    # URL entry
-    @url_entry = ::Gtk::Entry.new
-    @url_entry.text = "https://www.example.com"
-    @url_entry.signal_connect("activate") { on_load_url }
-
-    # Handle ESC key in URL entry
-    @url_entry.signal_connect("key-press-event") do |widget, event|
-      if event.keyval == Gdk::Keyval::KEY_Escape
-        # Restore current tab's URL
-        if current_tab && current_tab.webview.uri
-          @url_entry.text = current_tab.webview.uri
-        end
-
-        # In zen mode, hide toolbar after ESC
-        if @zen_mode
-          @toolbar.hide
-        end
-
-        # Remove focus from URL entry
-        current_tab.webview.grab_focus if current_tab
-
-        true  # Event handled
-      else
-        false  # Let other handlers process
-      end
-    end
-
-    @toolbar.pack_start(@url_entry, expand: true, fill: true, padding: 0)
-
-    # Go button
-    go_button = ::Gtk::Button.new(label: "Go")
-    go_button.signal_connect("clicked") { on_load_url }
-    @toolbar.pack_start(go_button, expand: false, fill: false, padding: 0)
+    # Keep @toolbar and @url_entry references for:
+    # - Zen mode operations (lines 1209, 1219)
+    # - URL updates on navigation (line 757)
 
     # Horizontal paned for sidebar and content
     @paned = Gtk::Paned.new(:horizontal)
@@ -155,17 +130,64 @@ class BrowserWindow < Gtk::Window
     vbox.pack_start(@paned, expand: true, fill: true, padding: 0)
 
     # Left sidebar for tabs
-    @sidebar = create_sidebar
+    # CRITICAL INITIALIZATION ORDERING:
+    # 1. Create paned widget FIRST (done above at line ~153)
+    # 2. Create view components (TabListView, HistoryListView, QueueListView)
+    # 3. Create Sidebar component with view_components
+    # 4. Pack sidebar into paned
+    # 5. Register paned signal handler (NOW @sidebar_component exists)
+    #
+    # This order is required because:
+    # - Paned signal handler references @sidebar_component.visible
+    # - Signal handler DOES fire during initialization when @paned.set_position() is called in map-event
+    # - @sidebar_component MUST exist BEFORE signal handler is registered
+    # - Previous spec incorrectly stated signals only fire during user interaction
+
+    # Create view components
+    tab_list_view = TabListView.new(->(favicon_data) { create_favicon_image(favicon_data) })
+    tab_list_view.on_tab_selected = ->(index) { switch_to_tab(index) }
+
+    history_list_view = HistoryListView.new(@history_manager,
+                                             ->(favicon_data) { create_favicon_image(favicon_data) })
+    history_list_view.on_history_item_selected = ->(visit) {
+      current_tab.webview.load_uri(visit['uri']) if current_tab
+    }
+
+    queue_list_view = QueueListView.new(@queue_manager,
+                                         ->(favicon_data) { create_favicon_image(favicon_data) })
+    queue_list_view.on_queue_item_selected = ->(entry) {
+      current_tab.webview.load_uri(entry['url']) if current_tab
+    }
+
+    # Create sidebar component
+    sidebar_callbacks = {
+      get_tabs: -> { [@tabs, @current_tab_index] },
+      get_current_tab: -> { current_tab },
+      get_queue_count: -> { @queue_manager.count },
+      get_paned: -> { @paned }
+    }
+    @sidebar_component = Sidebar.new(
+      { tab_list_view: tab_list_view, history_list_view: history_list_view, queue_list_view: queue_list_view },
+      sidebar_callbacks,
+      initial_width: (1200 * @sidebar_width_ratio).to_i
+    )
+
+    # Wire queue callback AFTER sidebar creation (safe because queue isn't modified during init)
+    queue_list_view.on_queue_modified = ->(count) {
+      @sidebar_component.update_queue_header(count)
+    }
+
+    @sidebar = @sidebar_component.widget
     @paned.pack1(@sidebar, resize: true, shrink: true)
     # Don't set position yet - wait until window is shown
 
-    # Track sidebar width changes (just update @sidebar_width, don't save yet)
+    # Track sidebar width changes - AFTER sidebar component creation
     @paned_position_set = false
     @paned.signal_connect("notify::position") do
-      if @sidebar_visible && @paned.position > 0
+      if @sidebar_component.visible && @paned.position > 0
         # Ignore the first change after we manually set the position
         if @paned_position_set
-          @sidebar_width = @paned.position
+          @sidebar_component.update_width(@paned.position)
         end
       end
     end
@@ -176,8 +198,9 @@ class BrowserWindow < Gtk::Window
       unless @initial_map_done
         # Calculate sidebar width based on window width (always 15%)
         window_width = allocation.width
-        @sidebar_width = (window_width * @sidebar_width_ratio).to_i
-        @paned.set_position(@sidebar_width)
+        sidebar_width = (window_width * @sidebar_width_ratio).to_i
+        @sidebar_component.update_width(sidebar_width)
+        @paned.set_position(sidebar_width)
         @paned_position_set = true
         @initial_map_done = true
       end
@@ -201,7 +224,7 @@ class BrowserWindow < Gtk::Window
 
       # Create favicon manager
       @favicon_manager = FaviconManager.new(@favicon_db, @history_manager, -> { @tabs })
-      @favicon_manager.on_favicon_updated = -> { refresh_tabs }
+      @favicon_manager.on_favicon_updated = -> { @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs }
     rescue => e
       puts "DEBUG: Error accessing favicon database: #{e.message}"
       @favicon_db = nil
@@ -242,7 +265,7 @@ class BrowserWindow < Gtk::Window
           'tabs' => @tabs.map { |tab| {'uri' => tab.uri, 'title' => tab.title} },
           'current_tab_index' => @current_tab_index,
           'dark_mode' => @settings_manager.dark_mode,
-          'sidebar_visible' => @sidebar_visible
+          'sidebar_visible' => @sidebar_component.visible
         }
         File.write('/tmp/browser-test-state.json', JSON.pretty_generate(test_state))
         false  # Don't repeat
@@ -250,7 +273,7 @@ class BrowserWindow < Gtk::Window
     end
 
     # Populate tabs in sidebar
-    refresh_tabs
+    @sidebar_component.refresh_current_view
 
     # Cleanup on window destroy
     signal_connect("destroy") do
@@ -262,187 +285,80 @@ class BrowserWindow < Gtk::Window
       @settings_manager.save_settings
     end
 
-    # Keyboard shortcuts
-    signal_connect("key-press-event") do |widget, event|
-      if event.state.control_mask? && event.state.shift_mask?
-        # Ctrl+Shift combinations
-        case event.keyval
-        when Gdk::Keyval::KEY_R
-          # Ctrl+Shift+R: Reload browser code
-          reload_browser
-          true  # Event handled
-        when Gdk::Keyval::KEY_P
-          # Ctrl+Shift+P: Video popout
-          open_video_popout
-          true  # Event handled
-        when Gdk::Keyval::KEY_Q
-          # Ctrl+Shift+Q: Add current tab to queue
-          add_current_tab_to_queue
-          true  # Event handled
-        when Gdk::Keyval::KEY_Tab, Gdk::Keyval::KEY_ISO_Left_Tab
-          # Ctrl+Shift+Tab: Previous tab (or previous queue item if queue sidebar is open)
-          if @sidebar_visible && @sidebar_mode == :queue
-            navigate_to_previous_queue_item
-          else
-            previous_tab
-          end
-          true  # Event handled
-        when Gdk::Keyval::KEY_Page_Down
-          # Ctrl+Shift+PageDown: Move tab down (or move current page down in queue if queue sidebar is open)
-          if @sidebar_visible && @sidebar_mode == :queue
-            move_current_page_down_in_queue
-          else
-            move_tab_down
-          end
-          true  # Event handled
-        when Gdk::Keyval::KEY_Page_Up
-          # Ctrl+Shift+PageUp: Move tab up (or move current page up in queue if queue sidebar is open)
-          if @sidebar_visible && @sidebar_mode == :queue
-            move_current_page_up_in_queue
-          else
-            move_tab_up
-          end
-          true  # Event handled
-        else
-          false  # Event not handled
-        end
-      elsif event.state.control_mask? && !event.state.mod1_mask?
-        case event.keyval
-        when Gdk::Keyval::KEY_l
-          # Ctrl+L: Focus and select URL bar
-          # In zen mode, show toolbar temporarily
-          if @zen_mode
-            @toolbar.show_all
-          end
+    # Keyboard handler
+    keyboard_callbacks = {
+      toolbar_actions: {
+        focus_url_entry: -> {
           @url_entry.grab_focus
           @url_entry.select_region(0, -1)
-          true  # Event handled
-        when Gdk::Keyval::KEY_b
-          # Ctrl+B: Toggle sidebar (unless in zen mode)
-          toggle_sidebar unless @zen_mode
-          true  # Event handled
-        when Gdk::Keyval::KEY_d
-          # Ctrl+D: Toggle dark mode
-          toggle_dark_mode
-          true  # Event handled
-        when Gdk::Keyval::KEY_r
-          # Ctrl+R: Refresh page
-          current_tab.webview.reload if current_tab
-          true  # Event handled
-        when Gdk::Keyval::KEY_t
-          # Ctrl+T: New tab
-          create_new_tab
-          true  # Event handled
-        when Gdk::Keyval::KEY_w
-          # Ctrl+W: Close current tab
-          close_current_tab
-          true  # Event handled
-        when Gdk::Keyval::KEY_h
-          # Ctrl+H: Show history in sidebar
-          show_history_sidebar
-          true  # Event handled
-        when Gdk::Keyval::KEY_q
-          # Ctrl+Q: Show queue in sidebar
-          show_queue_sidebar
-          true  # Event handled
-        when Gdk::Keyval::KEY_e
-          # Ctrl+E: Show tabs in sidebar
-          show_tabs_sidebar
-          true  # Event handled
-        when Gdk::Keyval::KEY_n
-          # Ctrl+N: New window
-          open_new_window
-          true  # Event handled
-        when Gdk::Keyval::KEY_Tab
-          # Ctrl+Tab: Next tab (or next queue item if queue sidebar is open)
-          if @sidebar_visible && @sidebar_mode == :queue
-            navigate_to_next_queue_item
-          else
-            next_tab
-          end
-          true  # Event handled
-        when Gdk::Keyval::KEY_bracketleft
-          # Ctrl+[: Back
+        },
+        show_toolbar: -> { @toolbar.show_all },
+        in_zen_mode: -> { @zen_mode }
+      },
+      sidebar_actions: {
+        toggle: -> { @sidebar_component.toggle },
+        show_tabs: -> { show_tabs_sidebar },
+        show_history: -> { show_history_sidebar },
+        show_queue: -> { show_queue_sidebar },
+        visible: -> { @sidebar_component.visible },
+        mode: -> { @sidebar_component.mode }
+      },
+      tab_actions: {
+        create: -> { create_new_tab },
+        close_current: -> { close_current_tab },
+        next: -> { next_tab },
+        previous: -> { previous_tab },
+        move_up: -> { move_tab_up },
+        move_down: -> { move_tab_down },
+        get_current: -> { current_tab }
+      },
+      navigation_actions: {
+        go_back: -> {
           if current_tab && current_tab.webview.can_go_back?
             current_tab.webview.go_back
           end
-          true  # Event handled
-        when Gdk::Keyval::KEY_bracketright
-          # Ctrl+]: Forward
+        },
+        go_forward: -> {
           if current_tab && current_tab.webview.can_go_forward?
             current_tab.webview.go_forward
           end
-          true  # Event handled
-        when Gdk::Keyval::KEY_equal, Gdk::Keyval::KEY_plus
-          # Ctrl+= or Ctrl++: Zoom in
-          zoom_in
-          true  # Event handled
-        when Gdk::Keyval::KEY_minus
-          # Ctrl+-: Zoom out
-          zoom_out
-          true  # Event handled
-        when Gdk::Keyval::KEY_0
-          # Ctrl+0: Reset zoom
-          reset_zoom
-          true  # Event handled
-        else
-          false  # Event not handled
-        end
-      elsif event.state.control_mask? && event.state.mod1_mask?
-        # Ctrl+Alt combinations
-        case event.keyval
-        when Gdk::Keyval::KEY_q
-          # Ctrl+Alt+Q: Remove current URL from queue and navigate to next
-          remove_from_queue_and_next
-          true  # Event handled
-        else
-          false  # Event not handled
-        end
-      else
-        case event.keyval
-        when Gdk::Keyval::KEY_F11
-          # F11: Toggle zen mode
-          toggle_zen_mode
-          true  # Event handled
-        when Gdk::Keyval::KEY_F12
-          # F12: Toggle web inspector
-          toggle_inspector
-          true  # Event handled
-        else
-          false  # Event not handled
-        end
-      end
+        },
+        reload: -> { current_tab.webview.reload if current_tab }
+      },
+      queue_actions: {
+        add_current: -> { add_current_tab_to_queue },
+        remove_and_next: -> { remove_from_queue_and_next },
+        next_item: -> { navigate_to_next_queue_item },
+        previous_item: -> { navigate_to_previous_queue_item },
+        move_current_up: -> { move_current_page_up_in_queue },
+        move_current_down: -> { move_current_page_down_in_queue }
+      },
+      zoom_actions: {
+        zoom_in: -> { zoom_in },
+        zoom_out: -> { zoom_out },
+        reset: -> { reset_zoom }
+      },
+      mode_actions: {
+        toggle_dark_mode: -> { toggle_dark_mode },
+        toggle_zen_mode: -> { toggle_zen_mode },
+        toggle_inspector: -> { toggle_inspector }
+      },
+      window_actions: {
+        reload_browser: -> { reload_browser },
+        open_new_window: -> { open_new_window },
+        open_video_popout: -> { open_video_popout }
+      }
+    }
+    @keyboard_handler = KeyboardHandler.new(keyboard_callbacks)
+
+    # Keyboard shortcuts
+    signal_connect("key-press-event") do |widget, event|
+      @keyboard_handler.handle_key_press(widget, event)
     end
 
     # Mouse button shortcuts (back/forward buttons)
     signal_connect("button-press-event") do |widget, event|
-      # Debug: Show ALL button presses to see what we're getting
-      puts "DEBUG: Mouse button pressed: #{event.button}"
-
-      case event.button
-      when 4, 6, 8
-        # Mouse back button (trying 4, 6, and 8)
-        puts "DEBUG: Back button detected (button #{event.button})"
-        if current_tab && current_tab.webview.can_go_back?
-          current_tab.webview.go_back
-          puts "DEBUG: Navigated back"
-        else
-          puts "DEBUG: Cannot go back"
-        end
-        true  # Event handled
-      when 5, 7, 9
-        # Mouse forward button (trying 5, 7, and 9)
-        puts "DEBUG: Forward button detected (button #{event.button})"
-        if current_tab && current_tab.webview.can_go_forward?
-          current_tab.webview.go_forward
-          puts "DEBUG: Navigated forward"
-        else
-          puts "DEBUG: Cannot go forward"
-        end
-        true  # Event handled
-      else
-        false  # Event not handled
-      end
+      @mouse_handler.handle_button_press(widget, event)
     end
   end
 
@@ -466,7 +382,7 @@ class BrowserWindow < Gtk::Window
     end
 
     # Refresh tabs sidebar
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def close_current_tab
@@ -509,7 +425,7 @@ class BrowserWindow < Gtk::Window
     switch_to_tab(@current_tab_index)
 
     # Refresh tabs sidebar
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def next_tab
@@ -518,7 +434,7 @@ class BrowserWindow < Gtk::Window
     # Move to next tab with wrapping
     @current_tab_index = (@current_tab_index + 1) % @tabs.length
     switch_to_tab(@current_tab_index)
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def previous_tab
@@ -527,7 +443,7 @@ class BrowserWindow < Gtk::Window
     # Move to previous tab with wrapping
     @current_tab_index = (@current_tab_index - 1) % @tabs.length
     switch_to_tab(@current_tab_index)
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def move_tab_up
@@ -542,7 +458,7 @@ class BrowserWindow < Gtk::Window
     @current_tab_index -= 1
 
     # Refresh tabs sidebar to show new order
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def move_tab_down
@@ -557,7 +473,7 @@ class BrowserWindow < Gtk::Window
     @current_tab_index += 1
 
     # Refresh tabs sidebar to show new order
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def switch_to_tab(index)
@@ -582,7 +498,7 @@ class BrowserWindow < Gtk::Window
     update_window_title
 
     # Refresh tabs to show selection
-    refresh_tabs
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
   end
 
   def update_window_title
@@ -613,60 +529,12 @@ class BrowserWindow < Gtk::Window
     # Handle mouse button events on the WebView
     tab.webview.signal_connect("button-press-event") do |_webview, event|
       next false unless current_tab == tab
-
-      case event.button
-      when 4, 6, 8
-        if tab.webview.can_go_back?
-          tab.webview.go_back
-          true
-        else
-          false
-        end
-      when 5, 7, 9
-        if tab.webview.can_go_forward?
-          tab.webview.go_forward
-          true
-        else
-          false
-        end
-      else
-        false
-      end
+      @mouse_handler.handle_button_press(tab.webview, event)
     end
 
     # Handle Ctrl+Click to open links in new tab
     tab.webview.signal_connect("decide-policy") do |_webview, decision, decision_type|
-      if decision_type == :navigation_action
-        navigation_action = decision.navigation_action
-        modifiers = navigation_action.modifiers
-
-        # Check if Ctrl key is pressed
-        # Convert modifiers to integer and check for CONTROL_MASK
-        ctrl_pressed = (modifiers.to_i & Gdk::ModifierType::CONTROL_MASK.to_i) != 0
-
-        if ctrl_pressed
-          # Get the URI being navigated to
-          uri_request = navigation_action.request
-          uri = uri_request.uri
-
-          # Only handle http/https links
-          if uri && (uri.start_with?("http://") || uri.start_with?("https://"))
-            # Ignore this navigation in the current tab
-            decision.ignore
-
-            # Open in new tab (but don't switch to it)
-            create_new_tab(uri, switch_to: false)
-
-            true  # Stop signal propagation
-          else
-            false  # Let other handlers process
-          end
-        else
-          false  # Let the navigation proceed normally
-        end
-      else
-        false  # Not a navigation action, let it proceed
-      end
+      @mouse_handler.handle_decide_policy(tab.webview, decision, decision_type, tab)
     end
 
     # Handle context menu to add custom options for links
@@ -685,7 +553,7 @@ class BrowserWindow < Gtk::Window
           when :added
             puts "Added to queue: #{link_uri}"
             # Refresh queue if visible
-            refresh_queue if @sidebar_mode == :queue
+            @sidebar_component.refresh_current_view if @sidebar_component.mode == :queue
 
             # Enqueue work for background worker to fetch title and favicon
             entry = @queue_manager.find_by_url(link_uri)
@@ -721,31 +589,6 @@ class BrowserWindow < Gtk::Window
     end
   end
 
-  def on_load_url
-    return unless current_tab
-
-    text = @url_entry.text.strip
-
-    # Check if it looks like a URL (has a TLD and no spaces)
-    # or if it already starts with a protocol
-    if text.start_with?("http://", "https://")
-      url = text
-    elsif text.match?(/^[\w-]+\.[\w.-]+/) && !text.include?(' ')
-      # Looks like a domain (e.g., "example.com" or "github.com")
-      url = "https://#{text}"
-    else
-      # Treat as a search query
-      query = CGI.escape(text)
-      url = "https://www.google.com/search?q=#{query}"
-    end
-
-    current_tab.webview.load_uri(url)
-
-    # In zen mode, hide toolbar after submitting URL
-    if @zen_mode
-      @toolbar.hide
-    end
-  end
 
   def on_uri_changed
     return unless current_tab
@@ -754,11 +597,11 @@ class BrowserWindow < Gtk::Window
 
     # Update URL bar only
     # Don't record history here - wait for title to load in on_title_changed
-    @url_entry.text = uri
+    @toolbar_component.update_url(uri)
     current_tab.uri = uri
 
     # Update queue highlight if queue sidebar is visible
-    refresh_queue if @sidebar_mode == :queue
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :queue
   end
 
   def on_title_changed
@@ -784,7 +627,7 @@ class BrowserWindow < Gtk::Window
       end
 
       # Refresh tabs to update title in sidebar
-      refresh_tabs
+      @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
     end
   end
 
@@ -796,156 +639,16 @@ class BrowserWindow < Gtk::Window
     current_tab.webview.go_forward if current_tab
   end
 
-  def create_sidebar
-    sidebar_box = Gtk::Box.new(:vertical, 0)
-
-    # Sidebar header
-    @sidebar_header = Gtk::Label.new
-    @sidebar_header.markup = "<b>Tabs</b>"
-    @sidebar_header.margin_top = 10
-    @sidebar_header.margin_bottom = 10
-    sidebar_box.pack_start(@sidebar_header, expand: false, fill: false, padding: 0)
-
-    # Scrolled window for list
-    scrolled = Gtk::ScrolledWindow.new
-    scrolled.set_policy(:never, :automatic)
-
-    # Create tab list view
-    @tab_list_view = TabListView.new(->(favicon_data) { create_favicon_image(favicon_data) })
-    @tab_list_view.on_tab_selected = ->(index) { switch_to_tab(index) }
-    @tabs_list = @tab_list_view.list_widget
-
-    # Keep @tabs_list for compatibility with sidebar switching (line 934)
-
-    # Create history list view
-    @history_list_view = HistoryListView.new(@history_manager, ->(favicon_data) { create_favicon_image(favicon_data) })
-    @history_list_view.on_history_item_selected = ->(visit) {
-      current_tab.webview.load_uri(visit['uri']) if current_tab
-    }
-    @history_list = @history_list_view.list_widget
-
-    # Create queue list view
-    @queue_list_view = QueueListView.new(@queue_manager, ->(favicon_data) { create_favicon_image(favicon_data) })
-    @queue_list_view.on_queue_item_selected = ->(entry) {
-      current_tab.webview.load_uri(entry['url']) if current_tab
-    }
-    @queue_list_view.on_queue_modified = ->(count) {
-      @sidebar_header.markup = "<b>Queue (#{count})</b>" if @sidebar_mode == :queue
-    }
-    @queue_list = @queue_list_view.list_widget
-
-    # Container to hold tabs, history, or queue list
-    @sidebar_content = Gtk::Box.new(:vertical, 0)
-    @sidebar_content.pack_start(@tabs_list, expand: true, fill: true, padding: 0)
-
-    scrolled.add(@sidebar_content)
-    sidebar_box.pack_start(scrolled, expand: true, fill: true, padding: 0)
-
-    sidebar_box.set_size_request(300, -1)
-    sidebar_box
-  end
-
   def show_tabs_sidebar
-    # If already showing tabs sidebar, toggle it off
-    if @sidebar_visible && @sidebar_mode == :tabs
-      @sidebar.hide
-      @paned.set_position(0)
-      @sidebar_visible = false
-      return
-    end
-
-    # Show sidebar if it's hidden
-    if !@sidebar_visible
-      @sidebar_visible = true
-      @sidebar.show_all
-      @paned.set_position(@sidebar_width)
-    end
-
-    @sidebar_mode = :tabs
-    @sidebar_header.markup = "<b>Tabs</b>"
-
-    # Clear sidebar content
-    @sidebar_content.children.each { |child| @sidebar_content.remove(child) }
-
-    # Add tabs list
-    @sidebar_content.pack_start(@tabs_list, expand: true, fill: true, padding: 0)
-    @sidebar_content.show_all
-
-    # Refresh tabs
-    refresh_tabs
+    @sidebar_component.show_tabs
   end
 
   def show_history_sidebar
-    # If already showing history sidebar, toggle it off
-    if @sidebar_visible && @sidebar_mode == :history
-      @sidebar.hide
-      @paned.set_position(0)
-      @sidebar_visible = false
-      return
-    end
-
-    # Show sidebar if it's hidden
-    if !@sidebar_visible
-      @sidebar_visible = true
-      @sidebar.show_all
-      @paned.set_position(@sidebar_width)
-    end
-
-    @sidebar_mode = :history
-    @sidebar_header.markup = "<b>Browsing History</b>"
-
-    # Clear sidebar content
-    @sidebar_content.children.each { |child| @sidebar_content.remove(child) }
-
-    # Add history list
-    @sidebar_content.pack_start(@history_list, expand: true, fill: true, padding: 0)
-    @sidebar_content.show_all
-
-    # Refresh history
-    refresh_history
-  end
-
-  def refresh_tabs
-    @tab_list_view.refresh(@tabs, @current_tab_index)
-  end
-
-  def refresh_history
-    @history_list_view.refresh(50)
+    @sidebar_component.show_history
   end
 
   def show_queue_sidebar
-    # If already showing queue sidebar, toggle it off
-    if @sidebar_visible && @sidebar_mode == :queue
-      @sidebar.hide
-      @paned.set_position(0)
-      @sidebar_visible = false
-      return
-    end
-
-    # Show sidebar if it's hidden
-    if !@sidebar_visible
-      @sidebar_visible = true
-      @sidebar.show_all
-      @paned.set_position(@sidebar_width)
-    end
-
-    @sidebar_mode = :queue
-    @sidebar_header.markup = "<b>Queue (#{@queue_manager.count})</b>"
-
-    # Clear sidebar content
-    @sidebar_content.children.each { |child| @sidebar_content.remove(child) }
-
-    # Add queue list
-    @sidebar_content.pack_start(@queue_list, expand: true, fill: true, padding: 0)
-    @sidebar_content.show_all
-
-    # Refresh queue
-    refresh_queue
-  end
-
-  def refresh_queue
-    current_url = current_tab&.webview&.uri
-    @queue_list_view.refresh(current_url)
+    @sidebar_component.show_queue
   end
 
   def add_current_tab_to_queue
@@ -960,8 +663,8 @@ class BrowserWindow < Gtk::Window
     case result
     when :added
       # Show notification or update queue if visible
-      if @sidebar_mode == :queue
-        refresh_queue
+      if @sidebar_component.mode == :queue
+        @sidebar_component.refresh_current_view
       end
       puts "Added to queue: #{title}"
     when :already_exists
@@ -980,8 +683,8 @@ class BrowserWindow < Gtk::Window
     next_entry = @queue_manager.remove_by_url(url)
 
     # Refresh queue if visible
-    if @sidebar_mode == :queue
-      refresh_queue
+    if @sidebar_component.mode == :queue
+      @sidebar_component.refresh_current_view
     end
 
     # Navigate to next entry if it exists
@@ -995,10 +698,10 @@ class BrowserWindow < Gtk::Window
 
   def move_selected_queue_entry_up
     # Only works when queue sidebar is visible
-    return unless @sidebar_mode == :queue
+    return unless @sidebar_component.mode == :queue
 
     # Get the currently selected row
-    selected_row = @queue_list.selected_row
+    selected_row = @sidebar_component.queue_list_widget.selected_row
     return unless selected_row
 
     # Get the entry data
@@ -1008,13 +711,13 @@ class BrowserWindow < Gtk::Window
     # Move up in the queue
     if @queue_manager.move_up(entry['id'])
       # Refresh the queue
-      refresh_queue
+      @sidebar_component.refresh_current_view
 
       # Find and select the row that now contains this entry
-      @queue_list.children.each do |row|
+      @sidebar_component.queue_list_widget.children.each do |row|
         row_entry = row.instance_variable_get(:@queue_entry)
         if row_entry && row_entry['id'] == entry['id']
-          @queue_list.select_row(row)
+          @sidebar_component.queue_list_widget.select_row(row)
           break
         end
       end
@@ -1025,10 +728,10 @@ class BrowserWindow < Gtk::Window
 
   def move_selected_queue_entry_down
     # Only works when queue sidebar is visible
-    return unless @sidebar_mode == :queue
+    return unless @sidebar_component.mode == :queue
 
     # Get the currently selected row
-    selected_row = @queue_list.selected_row
+    selected_row = @sidebar_component.queue_list_widget.selected_row
     return unless selected_row
 
     # Get the entry data
@@ -1038,13 +741,13 @@ class BrowserWindow < Gtk::Window
     # Move down in the queue
     if @queue_manager.move_down(entry['id'])
       # Refresh the queue
-      refresh_queue
+      @sidebar_component.refresh_current_view
 
       # Find and select the row that now contains this entry
-      @queue_list.children.each do |row|
+      @sidebar_component.queue_list_widget.children.each do |row|
         row_entry = row.instance_variable_get(:@queue_entry)
         if row_entry && row_entry['id'] == entry['id']
-          @queue_list.select_row(row)
+          @sidebar_component.queue_list_widget.select_row(row)
           break
         end
       end
@@ -1055,7 +758,7 @@ class BrowserWindow < Gtk::Window
 
   def navigate_to_next_queue_item
     # Only works when queue sidebar is visible
-    return unless @sidebar_mode == :queue && current_tab
+    return unless @sidebar_component.mode == :queue && current_tab
 
     current_url = current_tab.webview.uri
     return unless current_url
@@ -1083,7 +786,7 @@ class BrowserWindow < Gtk::Window
 
   def navigate_to_previous_queue_item
     # Only works when queue sidebar is visible
-    return unless @sidebar_mode == :queue && current_tab
+    return unless @sidebar_component.mode == :queue && current_tab
 
     current_url = current_tab.webview.uri
     return unless current_url
@@ -1111,7 +814,7 @@ class BrowserWindow < Gtk::Window
 
   def move_current_page_up_in_queue
     # Only works when queue sidebar is visible
-    return unless @sidebar_mode == :queue && current_tab
+    return unless @sidebar_component.mode == :queue && current_tab
 
     current_url = current_tab.webview.uri
     return unless current_url
@@ -1122,14 +825,14 @@ class BrowserWindow < Gtk::Window
 
     # Move up in the queue
     if @queue_manager.move_up(entry['id'])
-      refresh_queue
+      @sidebar_component.refresh_current_view
       puts "Moved current page up in queue: #{entry['title'] || entry['url']}"
     end
   end
 
   def move_current_page_down_in_queue
     # Only works when queue sidebar is visible
-    return unless @sidebar_mode == :queue && current_tab
+    return unless @sidebar_component.mode == :queue && current_tab
 
     current_url = current_tab.webview.uri
     return unless current_url
@@ -1140,7 +843,7 @@ class BrowserWindow < Gtk::Window
 
     # Move down in the queue
     if @queue_manager.move_down(entry['id'])
-      refresh_queue
+      @sidebar_component.refresh_current_view
       puts "Moved current page down in queue: #{entry['title'] || entry['url']}"
     end
   end
@@ -1190,17 +893,7 @@ class BrowserWindow < Gtk::Window
   end
 
   def toggle_sidebar
-    if @sidebar_visible
-      # Hide sidebar - set flag BEFORE changing position
-      @sidebar_visible = false
-      @sidebar.hide
-      @paned.set_position(0)
-    else
-      # Show sidebar
-      @sidebar.show_all
-      @paned.set_position(@sidebar_width)
-      @sidebar_visible = true
-    end
+    @sidebar_component.toggle
   end
 
   def toggle_zen_mode
@@ -1208,20 +901,22 @@ class BrowserWindow < Gtk::Window
       # Exit zen mode - show toolbar and restore sidebar state
       @toolbar.show_all
       if @sidebar_visible_before_zen
-        @sidebar.show_all
-        @paned.set_position(@sidebar_width)
-        @sidebar_visible = true
+        # Directly manipulate widget to avoid changing @visible flag
+        # (zen mode is temporary override, not user preference change)
+        @sidebar_component.widget.show_all
+        @paned.set_position(@sidebar_component.width)
       end
       @zen_mode = false
     else
       # Enter zen mode - hide toolbar and sidebar
-      @sidebar_visible_before_zen = @sidebar_visible
+      @sidebar_visible_before_zen = @sidebar_component.visible
       @toolbar.hide
 
-      if @sidebar_visible
-        @sidebar.hide
+      if @sidebar_component.visible
+        # Directly manipulate widget to avoid changing @visible flag
+        # (zen mode is temporary override, not user preference change)
+        @sidebar_component.widget.hide
         @paned.set_position(0)
-        @sidebar_visible = false
       end
 
       @zen_mode = true
