@@ -28,84 +28,10 @@ require_relative 'lib/managers/settings_manager'
 require_relative 'lib/managers/session_manager'
 require_relative 'lib/managers/queue_metadata_worker'
 require_relative 'lib/managers/favicon_manager'
-
-class Tab
-  attr_reader :webview, :list_box_row
-  attr_accessor :title, :uri, :favicon_data
-
-  def initialize(web_context, favicon_db, initial_uri = "https://www.google.com")
-    @webview = WebKit2Gtk::WebView.new(context: web_context)
-    @title = "New Tab"
-    @uri = initial_uri
-    @favicon_data = nil
-    @favicon_db = favicon_db
-    @list_box_row = nil  # Will be set when added to sidebar
-
-    # Enable developer tools and experimental features
-    settings = @webview.settings
-    settings.enable_developer_extras = true
-
-    # Enable experimental features for modern web compatibility
-    begin
-      experimental_features = WebKit2Gtk::Settings.experimental_features
-
-      # OPFS support (needed for 1Password and similar apps)
-      opfs_features = ['StorageAPI', 'FileSystemAccess', 'FileSystemWritableStream', 'AccessHandle']
-
-      # Standard features enabled by default in Safari
-      safari_standard = ['PopoverAttribute', 'WebShareFileAPI', 'ViewTransitions',
-                         'CSSUnprefixedBackdropFilter', 'ServiceWorkers', 'CSSContentVisibility']
-
-      # Cross-browser standard features
-      cross_browser_standard = ['BroadcastChannel', 'CompressionStream', 'CSSOMViewSmoothScrolling',
-                                'LazyImageLoading', 'Notifications', 'PermissionsAPI',
-                                'WebLocksAPI', 'URLPatternAPI']
-
-      features_to_enable = opfs_features + safari_standard + cross_browser_standard
-
-      features_to_enable.each do |feature_id|
-        # Find the feature by iterating through the FeatureList
-        feature = nil
-        (0...experimental_features.length).each do |i|
-          f = experimental_features.get(i)
-          if f.identifier == feature_id
-            feature = f
-            break
-          end
-        end
-
-        if feature
-          settings.set_feature_enabled(feature, true)
-        end
-      end
-    rescue => e
-      warn "Could not enable experimental features: #{e.message}"
-    end
-
-    # Connect signals
-    setup_signals
-
-    # Load initial URI
-    @webview.load_uri(initial_uri)
-  end
-
-  def setup_signals
-    @webview.signal_connect("notify::uri") do
-      @uri = @webview.uri
-      update_list_box_row if @list_box_row
-    end
-
-    @webview.signal_connect("notify::title") do
-      @title = @webview.title || "Untitled"
-      update_list_box_row if @list_box_row
-    end
-  end
-
-  def update_list_box_row
-    # This will be called to refresh the tab's appearance in the sidebar
-    # The actual implementation will be in BrowserWindow
-  end
-end
+require_relative 'lib/tab'
+require_relative 'lib/ui/tab_list_view'
+require_relative 'lib/ui/history_list_view'
+require_relative 'lib/ui/queue_list_view'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -884,18 +810,29 @@ class BrowserWindow < Gtk::Window
     scrolled = Gtk::ScrolledWindow.new
     scrolled.set_policy(:never, :automatic)
 
-    # Create both list boxes
-    @tabs_list = Gtk::ListBox.new
-    @tabs_list.selection_mode = :single
-    @tabs_list.signal_connect("row-activated") { |_list, row| on_tab_clicked(row) }
+    # Create tab list view
+    @tab_list_view = TabListView.new(->(favicon_data) { create_favicon_image(favicon_data) })
+    @tab_list_view.on_tab_selected = ->(index) { switch_to_tab(index) }
+    @tabs_list = @tab_list_view.list_widget
 
-    @history_list = Gtk::ListBox.new
-    @history_list.selection_mode = :single
-    @history_list.signal_connect("row-activated") { |_list, row| on_history_item_clicked(row) }
+    # Keep @tabs_list for compatibility with sidebar switching (line 934)
 
-    @queue_list = Gtk::ListBox.new
-    @queue_list.selection_mode = :single
-    @queue_list.signal_connect("row-activated") { |_list, row| on_queue_item_clicked(row) }
+    # Create history list view
+    @history_list_view = HistoryListView.new(@history_manager, ->(favicon_data) { create_favicon_image(favicon_data) })
+    @history_list_view.on_history_item_selected = ->(visit) {
+      current_tab.webview.load_uri(visit['uri']) if current_tab
+    }
+    @history_list = @history_list_view.list_widget
+
+    # Create queue list view
+    @queue_list_view = QueueListView.new(@queue_manager, ->(favicon_data) { create_favicon_image(favicon_data) })
+    @queue_list_view.on_queue_item_selected = ->(entry) {
+      current_tab.webview.load_uri(entry['url']) if current_tab
+    }
+    @queue_list_view.on_queue_modified = ->(count) {
+      @sidebar_header.markup = "<b>Queue (#{count})</b>" if @sidebar_mode == :queue
+    }
+    @queue_list = @queue_list_view.list_widget
 
     # Container to hold tabs, history, or queue list
     @sidebar_content = Gtk::Box.new(:vertical, 0)
@@ -969,145 +906,11 @@ class BrowserWindow < Gtk::Window
   end
 
   def refresh_tabs
-    # Clear existing items
-    @tabs_list.children.each { |child| @tabs_list.remove(child) }
-
-    # Add a row for each tab
-    @tabs.each_with_index do |tab, index|
-      row = create_tab_row(tab, index)
-      @tabs_list.add(row)
-
-      # Highlight the current tab
-      if index == @current_tab_index
-        @tabs_list.select_row(row)
-      end
-    end
-
-    @tabs_list.show_all
-  end
-
-  def create_tab_row(tab, index)
-    row = Gtk::ListBoxRow.new
-
-    # Horizontal box for favicon + text content
-    hbox = Gtk::Box.new(:horizontal, 8)
-    hbox.margin_top = 8
-    hbox.margin_bottom = 8
-    hbox.margin_start = 12
-    hbox.margin_end = 12
-
-    # Favicon
-    favicon_image = create_favicon_image(tab.favicon_data)
-    favicon_image.valign = :start
-    hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
-
-    # Vertical box for text content
-    vbox = Gtk::Box.new(:vertical, 2)
-
-    # Title
-    title = tab.title || "New Tab"
-    title_label = Gtk::Label.new
-    title_label.markup = "<b>#{CGI.escapeHTML(title[0..40])}</b>"
-    title_label.halign = :start
-    title_label.ellipsize = :end
-    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
-
-    # URL
-    if tab.uri && !tab.uri.empty?
-      url_label = Gtk::Label.new(tab.uri)
-      url_label.halign = :start
-      url_label.ellipsize = :middle
-      url_label.max_width_chars = 30
-      url_label.style_context.add_class("dim-label")
-      vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
-    end
-
-    hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
-
-    row.add(hbox)
-
-    # Store the tab index in the row
-    row.instance_variable_set(:@tab_index, index)
-
-    row
-  end
-
-  def on_tab_clicked(row)
-    tab_index = row.instance_variable_get(:@tab_index)
-    switch_to_tab(tab_index) if tab_index
+    @tab_list_view.refresh(@tabs, @current_tab_index)
   end
 
   def refresh_history
-    # Clear existing items
-    @history_list.children.each { |child| @history_list.remove(child) }
-
-    # Get recent history
-    visits = @history_manager.recent_visits(50)
-
-    visits.each do |visit|
-      row = create_history_row(visit)
-      @history_list.add(row)
-    end
-
-    @history_list.show_all
-  end
-
-  def create_history_row(visit)
-    row = Gtk::ListBoxRow.new
-
-    # Horizontal box for favicon + text content
-    hbox = Gtk::Box.new(:horizontal, 8)
-    hbox.margin_top = 8
-    hbox.margin_bottom = 8
-    hbox.margin_start = 12
-    hbox.margin_end = 12
-
-    # Favicon
-    favicon_image = create_favicon_image(visit['favicon'])
-    favicon_image.valign = :start
-    hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
-
-    # Vertical box for text content
-    vbox = Gtk::Box.new(:vertical, 2)
-
-    # Title
-    title = visit['visit_title'] || visit['page_title'] || visit['uri']
-    title_label = Gtk::Label.new
-    title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
-    title_label.halign = :start
-    title_label.ellipsize = :end
-    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
-
-    # URL
-    url_label = Gtk::Label.new(visit['uri'])
-    url_label.halign = :start
-    url_label.ellipsize = :middle
-    url_label.max_width_chars = 40
-    url_label.style_context.add_class("dim-label")
-    vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
-
-    # Time ago
-    time_ago = format_time_ago(visit['visited_at'])
-    time_label = Gtk::Label.new(time_ago)
-    time_label.halign = :start
-    time_label.style_context.add_class("dim-label")
-    vbox.pack_start(time_label, expand: false, fill: false, padding: 0)
-
-    hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
-
-    row.add(hbox)
-
-    # Store visit data in the row
-    row.instance_variable_set(:@visit_data, visit)
-
-    row
-  end
-
-  def on_history_item_clicked(row)
-    visit = row.instance_variable_get(:@visit_data)
-    if visit && current_tab
-      current_tab.webview.load_uri(visit['uri'])
-    end
+    @history_list_view.refresh(50)
   end
 
   def show_queue_sidebar
@@ -1141,222 +944,8 @@ class BrowserWindow < Gtk::Window
   end
 
   def refresh_queue
-    # Clear existing items
-    @queue_list.children.each { |child| @queue_list.remove(child) }
-
-    # Get all queue entries
-    entries = @queue_manager.all
-
-    # Get current tab's URL for highlighting
     current_url = current_tab&.webview&.uri
-
-    entries.each do |entry|
-      row = create_queue_row(entry)
-      @queue_list.add(row)
-
-      # Highlight the queue entry that matches the current tab's URL
-      # Use fuzzy matching: queue URL params must be subset of current URL params
-      if current_url && entry['url'] && urls_match?(entry['url'], current_url)
-        @queue_list.select_row(row)
-      end
-    end
-
-    @queue_list.show_all
-
-    # Update sidebar header with count
-    if @sidebar_mode == :queue
-      @sidebar_header.markup = "<b>Queue (#{entries.length})</b>"
-    end
-  end
-
-  def urls_match?(queue_url, current_url)
-    # Parse both URLs
-    begin
-      queue_uri = URI.parse(queue_url)
-      current_uri = URI.parse(current_url)
-    rescue URI::InvalidURIError
-      return false
-    end
-
-    # Compare base URLs (scheme, host, path) - ignore trailing slashes
-    queue_base = "#{queue_uri.scheme}://#{queue_uri.host}#{queue_uri.path}".sub(/\/$/, '')
-    current_base = "#{current_uri.scheme}://#{current_uri.host}#{current_uri.path}".sub(/\/$/, '')
-    return false unless queue_base == current_base
-
-    # Parse query parameters
-    queue_params = queue_uri.query ? CGI.parse(queue_uri.query) : {}
-    current_params = current_uri.query ? CGI.parse(current_uri.query) : {}
-
-    # Check if either URL's params are a subset of the other
-    # This handles both cases:
-    # 1. Queue has extra params (YouTube strips them) - current is subset of queue
-    # 2. Current has extra params - queue is subset of current
-    params_are_subset?(queue_params, current_params) || params_are_subset?(current_params, queue_params)
-  end
-
-  def params_are_subset?(subset_params, superset_params)
-    # Check if all params in subset exist in superset with same values
-    subset_params.all? do |key, values|
-      superset_params[key] == values
-    end
-  end
-
-  def create_queue_row(entry)
-    row = Gtk::ListBoxRow.new
-
-    # Horizontal box for favicon + text content + actions
-    hbox = Gtk::Box.new(:horizontal, 8)
-    hbox.margin_top = 8
-    hbox.margin_bottom = 8
-    hbox.margin_start = 12
-    hbox.margin_end = 12
-
-    # Favicon
-    favicon_image = create_favicon_image(entry['favicon'])
-    favicon_image.valign = :start
-    hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
-
-    # Vertical box for text content
-    vbox = Gtk::Box.new(:vertical, 2)
-
-    # Title
-    title = entry['title'] || entry['url']
-    # Ensure UTF-8 encoding for display
-    title = title.dup.force_encoding('UTF-8') if title
-    unless title.valid_encoding?
-      title = title.force_encoding('ISO-8859-1').encode('UTF-8', invalid: :replace, undef: :replace)
-    end
-
-    title_label = Gtk::Label.new
-    title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
-    title_label.halign = :start
-    title_label.ellipsize = :end
-    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
-
-    # URL
-    url_label = Gtk::Label.new(entry['url'])
-    url_label.halign = :start
-    url_label.ellipsize = :middle
-    url_label.max_width_chars = 40
-    url_label.style_context.add_class("dim-label")
-    vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
-
-    # Position indicator
-    position_label = Gtk::Label.new("##{entry['position']}")
-    position_label.halign = :start
-    position_label.style_context.add_class("dim-label")
-    vbox.pack_start(position_label, expand: false, fill: false, padding: 0)
-
-    hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
-
-    # Remove button
-    remove_button = Gtk::Button.new(label: "×")
-    remove_button.relief = :none
-    remove_button.signal_connect("clicked") do
-      @queue_manager.remove_by_id(entry['id'])
-      refresh_queue
-      true  # Stop event propagation
-    end
-    hbox.pack_start(remove_button, expand: false, fill: false, padding: 0)
-
-    # Wrap in EventBox to enable mouse events for drag-and-drop
-    event_box = Gtk::EventBox.new
-    event_box.add(hbox)
-    event_box.visible_window = false  # Transparent event box
-
-    row.add(event_box)
-
-    # Store entry data in the row and event_box
-    row.instance_variable_set(:@queue_entry, entry)
-    event_box.instance_variable_set(:@queue_entry, entry)
-    event_box.instance_variable_set(:@parent_row, row)
-
-    # Set up drag-and-drop for reordering on the event_box
-    setup_queue_row_drag_and_drop(event_box)
-
-    row
-  end
-
-  def setup_queue_row_drag_and_drop(widget)
-    # Create target entry for drag-and-drop using standard text target
-    # "TEXT" is a recognized text type that works with set_text/get_text
-    target_entry = Gtk::TargetEntry.new("TEXT", :same_app, 0)
-
-    # Set up as drag source
-    widget.drag_source_set(
-      Gdk::ModifierType::BUTTON1_MASK,
-      [target_entry],
-      Gdk::DragAction::MOVE
-    )
-
-    # Set up as drag destination
-    # Use MOTION and HIGHLIGHT but NOT DROP - we handle drop manually to avoid conflicts
-    widget.drag_dest_set(
-      Gtk::DestDefaults::MOTION | Gtk::DestDefaults::HIGHLIGHT,
-      [target_entry],
-      Gdk::DragAction::MOVE
-    )
-
-    # Store reference to browser window
-    browser_window = self
-
-    # Handle drag data get (provide the data when dragging)
-    widget.signal_connect("drag-data-get") do |w, context, selection_data, info, time|
-      entry = w.instance_variable_get(:@queue_entry)
-      if entry
-        # Send the entry ID as plain text
-        selection_data.text = entry['id'].to_s
-      end
-    end
-
-    # Handle drag drop
-    widget.signal_connect("drag-drop") do |w, context, x, y, time|
-      # Request the drag data - this will trigger drag-data-received
-      target = Gdk::Atom.intern("TEXT", false)
-      w.drag_get_data(context, target, time)
-      true
-    end
-
-    # Handle drag data received (handle the drop)
-    widget.signal_connect("drag-data-received") do |w, context, x, y, selection_data, info, time|
-      # Get the dropped entry ID
-      dropped_id_text = selection_data.text
-
-      if dropped_id_text && !dropped_id_text.empty?
-        dropped_entry_id = dropped_id_text.to_i
-        target_entry = w.instance_variable_get(:@queue_entry)
-
-        if target_entry && dropped_entry_id != target_entry['id']
-          # Move the dropped entry to the target position
-          if browser_window.queue_manager.move(dropped_entry_id, target_entry['position'])
-            # Refresh the queue to show the new order
-            browser_window.refresh_queue
-
-            # Find and select the moved row
-            browser_window.queue_list.children.each do |child|
-              child_entry = child.instance_variable_get(:@queue_entry)
-              if child_entry && child_entry['id'] == dropped_entry_id
-                browser_window.queue_list.select_row(child)
-                break
-              end
-            end
-          end
-        end
-      end
-
-      # Finish the drag operation
-      context.finish(true, false, time)
-    end
-  end
-
-  # Expose queue_manager and queue_list for drag-and-drop callbacks
-  attr_reader :queue_manager, :queue_list
-
-  def on_queue_item_clicked(row)
-    entry = row.instance_variable_get(:@queue_entry)
-    if entry && current_tab
-      current_tab.webview.load_uri(entry['url'])
-    end
+    @queue_list_view.refresh(current_url)
   end
 
   def add_current_tab_to_queue
@@ -1578,26 +1167,6 @@ class BrowserWindow < Gtk::Window
     # Default icon if no favicon or error
     Gtk::Image.new(icon_name: "text-html", size: :menu)
   end
-
-  def format_time_ago(timestamp)
-    seconds_ago = Time.now.to_i - timestamp
-    minutes_ago = seconds_ago / 60
-    hours_ago = minutes_ago / 60
-    days_ago = hours_ago / 24
-
-    if seconds_ago < 60
-      "Just now"
-    elsif minutes_ago < 60
-      "#{minutes_ago}m ago"
-    elsif hours_ago < 24
-      "#{hours_ago}h ago"
-    elsif days_ago == 1
-      "Yesterday"
-    else
-      "#{days_ago} days ago"
-    end
-  end
-
 
   def on_load_changed(load_event)
     return unless current_tab
