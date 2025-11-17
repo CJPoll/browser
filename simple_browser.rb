@@ -1,5 +1,8 @@
 #!/usr/bin/env ruby
 
+
+require 'fileutils'
+
 # Capture ARGV before GTK Application consumes it
 ORIGINAL_ARGV = ARGV.dup
 
@@ -16,7 +19,6 @@ end
 require 'gtk3'
 require 'webkit2-gtk'
 require 'cgi'
-require 'fileutils'
 require 'json'
 require 'net/http'
 require 'uri'
@@ -214,19 +216,15 @@ class BrowserWindow < Gtk::Window
     end
 
     # Set up favicon database
-    puts "DEBUG: WebContext methods containing 'favicon': #{@web_context.methods.grep(/favicon/i)}"
-    puts "DEBUG: WebContext methods containing 'database': #{@web_context.methods.grep(/database/i)}"
 
     # Set up favicon database and manager
     begin
       @favicon_db = @web_context.favicon_database
-      puts "DEBUG: Got favicon database: #{@favicon_db.inspect}"
 
       # Create favicon manager
       @favicon_manager = FaviconManager.new(@favicon_db, @history_manager, -> { @tabs })
       @favicon_manager.on_favicon_updated = -> { @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs }
     rescue => e
-      puts "DEBUG: Error accessing favicon database: #{e.message}"
       @favicon_db = nil
       @favicon_manager = nil
     end
@@ -360,6 +358,7 @@ class BrowserWindow < Gtk::Window
     signal_connect("button-press-event") do |widget, event|
       @mouse_handler.handle_button_press(widget, event)
     end
+
   end
 
   def current_tab
@@ -403,7 +402,6 @@ class BrowserWindow < Gtk::Window
       begin
         tab_to_close.webview.destroy if tab_to_close.webview.respond_to?(:destroy)
       rescue => e
-        puts "DEBUG: Error destroying webview: #{e.message}"
       end
     end
 
