@@ -26,6 +26,8 @@ require_relative 'video_popout_window'
 require_relative 'lib/managers/web_context_manager'
 require_relative 'lib/managers/settings_manager'
 require_relative 'lib/managers/session_manager'
+require_relative 'lib/managers/queue_metadata_worker'
+require_relative 'lib/managers/favicon_manager'
 
 class Tab
   attr_reader :webview, :list_box_row
@@ -119,9 +121,10 @@ class BrowserWindow < Gtk::Window
     @queue_manager = QueueManager.new
 
     # Initialize background worker for fetching queue entry metadata
-    @favicon_fetch_queue = Thread::Queue.new
-    @favicon_worker_running = true
-    @favicon_worker = Thread.new { favicon_worker_loop }
+    @queue_metadata_worker = QueueMetadataWorker.new(@queue_manager)
+    @queue_metadata_worker.on_metadata_fetched = -> {
+      refresh_queue if @sidebar_mode == :queue
+    }
 
     # Data directory
     @data_dir = File.join(Dir.home, '.local/share/toy-browser')
@@ -147,10 +150,6 @@ class BrowserWindow < Gtk::Window
 
     # Track last recorded visit to avoid duplicates
     @last_recorded_visit = nil
-
-    # Favicon debouncing - track largest favicon per URL
-    @favicon_timers = {}      # url => GLib timeout source ID
-    @favicon_candidates = {}  # url => {size, surface}
 
     # Apply dark mode setting
     gtk_settings = Gtk::Settings.default
@@ -269,16 +268,18 @@ class BrowserWindow < Gtk::Window
     puts "DEBUG: WebContext methods containing 'favicon': #{@web_context.methods.grep(/favicon/i)}"
     puts "DEBUG: WebContext methods containing 'database': #{@web_context.methods.grep(/database/i)}"
 
-    # Try to access favicon_database as a property
+    # Set up favicon database and manager
     begin
       @favicon_db = @web_context.favicon_database
       puts "DEBUG: Got favicon database: #{@favicon_db.inspect}"
-      @favicon_db.signal_connect("favicon-changed") do |_db, page_uri, favicon_uri|
-        on_favicon_changed(page_uri, favicon_uri)
-      end
+
+      # Create favicon manager
+      @favicon_manager = FaviconManager.new(@favicon_db, @history_manager, -> { @tabs })
+      @favicon_manager.on_favicon_updated = -> { refresh_tabs }
     rescue => e
       puts "DEBUG: Error accessing favicon database: #{e.message}"
       @favicon_db = nil
+      @favicon_manager = nil
     end
 
     # Scrolled window for webview (will swap webviews when switching tabs)
@@ -328,9 +329,7 @@ class BrowserWindow < Gtk::Window
     # Cleanup on window destroy
     signal_connect("destroy") do
       # Stop the background worker
-      @favicon_worker_running = false
-      @favicon_fetch_queue.push(nil)  # Unblock the worker if it's waiting
-      @favicon_worker.join(1) if @favicon_worker&.alive?  # Wait up to 1 second
+      @queue_metadata_worker.stop
 
       # Save session and settings
       save_current_session
@@ -765,7 +764,7 @@ class BrowserWindow < Gtk::Window
             # Enqueue work for background worker to fetch title and favicon
             entry = @queue_manager.find_by_url(link_uri)
             if entry
-              @favicon_fetch_queue.push({id: entry['id'], url: link_uri})
+              @queue_metadata_worker.enqueue(entry['id'], link_uri)
             end
           when :already_exists
             puts "Already in queue: #{link_uri}"
@@ -855,152 +854,11 @@ class BrowserWindow < Gtk::Window
         @last_recorded_visit = visit_key
 
         # Try to fetch favicon for this page (important for SPAs like YouTube)
-        fetch_and_save_favicon(uri)
+        @favicon_manager.fetch_and_save_favicon(uri) if @favicon_manager
       end
 
       # Refresh tabs to update title in sidebar
       refresh_tabs
-    end
-  end
-
-  def on_favicon_changed(page_uri, favicon_uri)
-    return unless @favicon_db
-
-    puts "DEBUG: Favicon changed for page: #{page_uri}"
-    puts "DEBUG: Favicon URI: #{favicon_uri}"
-
-    # Favicon changed - try to save it for the current page
-    fetch_and_save_favicon(page_uri)
-  end
-
-  def fetch_and_save_favicon(page_uri)
-    return unless @favicon_db
-
-    # Get the favicon asynchronously from the database
-    @favicon_db.get_favicon(page_uri, nil) do |_object, result|
-      begin
-        surface = @favicon_db.get_favicon_finish(result)
-
-        if surface
-          puts "DEBUG: Got favicon surface for #{page_uri}"
-          # Convert to PNG to check size
-          favicon_data = surface_to_png(surface)
-
-          if favicon_data
-            size = favicon_data.bytesize
-
-            # Track largest favicon seen for this URL
-            current_candidate = @favicon_candidates[page_uri]
-            if !current_candidate || size > current_candidate[:size]
-              puts "DEBUG: New largest favicon candidate: #{size} bytes (previous: #{current_candidate ? current_candidate[:size] : 0} bytes)"
-              @favicon_candidates[page_uri] = {size: size, surface: surface}
-            end
-
-            # Cancel previous timer if exists
-            if @favicon_timers[page_uri]
-              GLib::Source.remove(@favicon_timers[page_uri])
-            end
-
-            # Set debounce timer - save after 300ms of silence
-            @favicon_timers[page_uri] = GLib::Timeout.add(300) do
-              # Save the largest favicon we saw
-              candidate = @favicon_candidates[page_uri]
-              if candidate
-                puts "DEBUG: Debounce timer fired - saving favicon (#{candidate[:size]} bytes) for #{page_uri}"
-                save_favicon_data(page_uri, candidate[:surface])
-                @favicon_candidates.delete(page_uri)
-                @favicon_timers.delete(page_uri)
-              end
-              false  # Don't repeat
-            end
-          end
-        else
-          puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
-          # Try to get favicon from root domain as fallback
-          try_root_domain_favicon(page_uri)
-        end
-      rescue => e
-        if e.message.include?("Unknown favicon")
-          puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
-          try_root_domain_favicon(page_uri)
-        else
-          puts "DEBUG: Error getting favicon for #{page_uri}: #{e.message}"
-        end
-      end
-    end
-  end
-
-  def try_root_domain_favicon(page_uri)
-    return unless @favicon_db
-
-    begin
-      uri = URI.parse(page_uri)
-      root_uri = "#{uri.scheme}://#{uri.host}/"
-
-      return if root_uri == page_uri  # Already tried root domain
-
-      puts "DEBUG: Trying favicon from #{root_uri}"
-
-      @favicon_db.get_favicon(root_uri, nil) do |_object, result|
-        begin
-          surface = @favicon_db.get_favicon_finish(result)
-
-          if surface
-            puts "DEBUG: Got root domain favicon for #{page_uri}"
-            save_favicon_data(page_uri, surface)
-          else
-            puts "DEBUG: No root domain favicon available for #{page_uri}"
-          end
-        rescue => e
-          puts "DEBUG: Error getting root domain favicon: #{e.message}"
-        end
-      end
-    rescue URI::InvalidURIError => e
-      puts "DEBUG: Invalid URI for root domain lookup: #{e.message}"
-    end
-  end
-
-  def save_favicon_data(page_uri, surface)
-    favicon_data = surface_to_png(surface)
-
-    if favicon_data
-      puts "DEBUG: Saving favicon data (#{favicon_data.bytesize} bytes) for #{page_uri}"
-      @history_manager.update_favicon(page_uri, favicon_data)
-
-      # Update the tab's favicon if it matches this URI
-      @tabs.each do |tab|
-        if tab.uri == page_uri
-          tab.favicon_data = favicon_data
-        end
-      end
-
-      # Refresh tabs to show the new favicon
-      refresh_tabs
-    else
-      puts "DEBUG: Failed to convert favicon to PNG for #{page_uri}"
-    end
-  end
-
-  def surface_to_png(surface)
-    return nil unless surface
-
-    # Create a temporary file to write the PNG
-    require 'tempfile'
-    temp = Tempfile.new(['favicon', '.png'])
-    temp.close
-
-    begin
-      # Write surface to PNG file
-      surface.write_to_png(temp.path)
-
-      # Read the PNG data
-      png_data = File.binread(temp.path)
-      png_data
-    rescue => e
-      warn "Failed to convert favicon: #{e.message}"
-      nil
-    ensure
-      temp.unlink
     end
   end
 
@@ -1756,7 +1614,7 @@ class BrowserWindow < Gtk::Window
           @last_recorded_visit = visit_key
 
           # Try to fetch favicon for this page
-          fetch_and_save_favicon(uri)
+          @favicon_manager.fetch_and_save_favicon(uri) if @favicon_manager
         end
       end
     end
@@ -1890,111 +1748,6 @@ class BrowserWindow < Gtk::Window
 
     # Close this window (will quit the application)
     close
-  end
-
-  # Background worker loop for fetching queue entry metadata
-  def favicon_worker_loop
-    while @favicon_worker_running
-      item = @favicon_fetch_queue.pop
-      break if item.nil?  # Poison pill to stop worker
-
-      begin
-        fetch_queue_entry_metadata(item[:id], item[:url])
-      rescue => e
-        warn "Error fetching metadata for #{item[:url]}: #{e.message}"
-      end
-    end
-  end
-
-  # Fetch title and favicon for a queue entry
-  def fetch_queue_entry_metadata(entry_id, url)
-    uri = URI.parse(url)
-
-    # Fetch the page
-    response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
-                               open_timeout: 5, read_timeout: 5) do |http|
-      request = Net::HTTP::Get.new(uri)
-      request['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
-      http.request(request)
-    end
-
-    return unless response.is_a?(Net::HTTPSuccess)
-
-    html = response.body
-    title = extract_title_from_html(html)
-    favicon_url = extract_favicon_url_from_html(html, uri)
-
-    # Fetch favicon if found
-    favicon_data = nil
-    if favicon_url
-      favicon_data = fetch_favicon(favicon_url)
-    else
-      # Try default /favicon.ico
-      default_favicon_url = "#{uri.scheme}://#{uri.host}/favicon.ico"
-      favicon_data = fetch_favicon(default_favicon_url)
-    end
-
-    # Update database (safe to do from background thread)
-    @queue_manager.update_title(url, title) if title
-    @queue_manager.update_favicon(url, favicon_data) if favicon_data
-
-    # Schedule UI refresh on main thread
-    GLib::Idle.add do
-      refresh_queue if @sidebar_mode == :queue
-      false  # Don't repeat
-    end
-  end
-
-  def extract_title_from_html(html)
-    # Simple regex to extract title
-    match = html.match(/<title[^>]*>(.*?)<\/title>/im)
-    return nil unless match
-
-    title = match[1].strip
-
-    # Ensure UTF-8 encoding, replacing invalid characters
-    title = title.force_encoding('UTF-8')
-    unless title.valid_encoding?
-      # Try different encodings
-      title = title.force_encoding('ISO-8859-1').encode('UTF-8', invalid: :replace, undef: :replace)
-    end
-
-    CGI.unescapeHTML(title)
-  end
-
-  def extract_favicon_url_from_html(html, base_uri)
-    # Look for <link rel="icon"> or <link rel="shortcut icon">
-    match = html.match(/<link[^>]*rel=["'](?:shortcut )?icon["'][^>]*href=["']([^"']+)["']/im)
-    return nil unless match
-
-    favicon_path = match[1]
-
-    # Make absolute URL if relative
-    if favicon_path.start_with?('http')
-      favicon_path
-    elsif favicon_path.start_with?('//')
-      "#{base_uri.scheme}:#{favicon_path}"
-    elsif favicon_path.start_with?('/')
-      "#{base_uri.scheme}://#{base_uri.host}#{favicon_path}"
-    else
-      "#{base_uri.scheme}://#{base_uri.host}/#{favicon_path}"
-    end
-  end
-
-  def fetch_favicon(favicon_url)
-    uri = URI.parse(favicon_url)
-
-    response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
-                               open_timeout: 3, read_timeout: 3) do |http|
-      request = Net::HTTP::Get.new(uri)
-      http.request(request)
-    end
-
-    return response.body if response.is_a?(Net::HTTPSuccess)
-    nil
-  rescue => e
-    # Silently fail for favicons
-    nil
   end
 
   # Helper method to save current session (private - only called internally)
