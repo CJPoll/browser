@@ -23,6 +23,9 @@ require 'uri'
 require_relative 'history_manager'
 require_relative 'queue_manager'
 require_relative 'video_popout_window'
+require_relative 'lib/managers/web_context_manager'
+require_relative 'lib/managers/settings_manager'
+require_relative 'lib/managers/session_manager'
 
 class Tab
   attr_reader :webview, :list_box_row
@@ -125,7 +128,10 @@ class BrowserWindow < Gtk::Window
     FileUtils.mkdir_p(@data_dir)
 
     # Load settings
-    load_settings
+    @settings_manager = SettingsManager.new(data_dir: @data_dir)
+    @session_manager = SessionManager.new(data_dir: @data_dir)
+    @dark_mode = @settings_manager.dark_mode
+    @sidebar_width_ratio = 0.15  # Always 15%, not persisted
 
     # Calculate initial sidebar width from ratio (using default window width)
     # This will be recalculated when the window is actually shown
@@ -155,7 +161,7 @@ class BrowserWindow < Gtk::Window
     @current_tab_index = 0
 
     # Create web context first (needed for tabs)
-    @web_context = create_web_context
+    @web_context = WebContextManager.create(data_dir: @data_dir)
 
     # Create layout
     vbox = ::Gtk::Box.new(:vertical, 0)
@@ -255,7 +261,7 @@ class BrowserWindow < Gtk::Window
 
     # Save settings when window is closing
     signal_connect("delete-event") do
-      save_settings
+      @settings_manager.save_settings
       false  # Allow the window to close
     end
 
@@ -282,7 +288,7 @@ class BrowserWindow < Gtk::Window
     # Only restore session if no URL was passed as argument
     if ORIGINAL_ARGV.empty?
       # Restore session if available, otherwise create initial tab
-      session = load_session
+      session = @session_manager.load_session
       if session && session['tabs'] && !session['tabs'].empty?
         # Restore tabs from session
         session['tabs'].each do |tab_url|
@@ -302,6 +308,20 @@ class BrowserWindow < Gtk::Window
       create_new_tab("about:blank")
     end
 
+    # Test mode: Write state for automated testing
+    if ENV['BROWSER_TEST_MODE'] == '1'
+      GLib::Idle.add do
+        test_state = {
+          'tabs' => @tabs.map { |tab| {'uri' => tab.uri, 'title' => tab.title} },
+          'current_tab_index' => @current_tab_index,
+          'dark_mode' => @settings_manager.dark_mode,
+          'sidebar_visible' => @sidebar_visible
+        }
+        File.write('/tmp/browser-test-state.json', JSON.pretty_generate(test_state))
+        false  # Don't repeat
+      end
+    end
+
     # Populate tabs in sidebar
     refresh_tabs
 
@@ -313,8 +333,8 @@ class BrowserWindow < Gtk::Window
       @favicon_worker.join(1) if @favicon_worker&.alive?  # Wait up to 1 second
 
       # Save session and settings
-      save_session
-      save_settings
+      save_current_session
+      @settings_manager.save_settings
     end
 
     # Keyboard shortcuts
@@ -990,40 +1010,6 @@ class BrowserWindow < Gtk::Window
 
   def on_forward
     current_tab.webview.go_forward if current_tab
-  end
-
-  def create_web_context
-    # Set up data directories
-    data_dir = File.join(Dir.home, '.local/share/toy-browser')
-    cache_dir = File.join(Dir.home, '.cache/toy-browser')
-
-    FileUtils.mkdir_p(data_dir)
-    FileUtils.mkdir_p(cache_dir)
-
-    # Get the default web context
-    context = WebKit2Gtk::WebContext.default
-
-    # Check what directories the data manager is using
-    data_manager = context.website_data_manager
-    puts "DEBUG: Base data directory: #{data_manager.base_data_directory}"
-    puts "DEBUG: Base cache directory: #{data_manager.base_cache_directory}"
-    puts "DEBUG: Local storage directory: #{data_manager.local_storage_directory}"
-    puts "DEBUG: IndexedDB directory: #{data_manager.indexeddb_directory}"
-
-    # Set up persistent cookie storage
-    cookies_file = File.join(data_dir, 'cookies.sqlite')
-    cookie_manager = context.cookie_manager
-    cookie_manager.set_persistent_storage(
-      cookies_file,
-      :sqlite
-    )
-
-    # Set up favicon database
-    favicon_dir = File.join(data_dir, 'favicons')
-    FileUtils.mkdir_p(favicon_dir)
-    context.set_favicon_database_directory(favicon_dir)
-
-    context
   end
 
   def create_sidebar
@@ -1816,14 +1802,15 @@ class BrowserWindow < Gtk::Window
   end
 
   def toggle_dark_mode
-    @dark_mode = !@dark_mode
+    @settings_manager.toggle_dark_mode
+    @dark_mode = @settings_manager.dark_mode
 
     # Toggle GTK theme variant (affects browser UI)
     gtk_settings = Gtk::Settings.default
     gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
 
     # Save settings
-    save_settings
+    @settings_manager.save_settings
 
     puts @dark_mode ? "🌙 Dark mode enabled" : "☀️  Light mode enabled"
   end
@@ -1864,37 +1851,6 @@ class BrowserWindow < Gtk::Window
     puts "Zoom: 100%"
   end
 
-  def load_settings
-    settings_file = File.join(@data_dir, 'settings.json')
-
-    # Default settings
-    @dark_mode = false
-    @sidebar_width_ratio = 0.15  # Always start at 15% of window width
-
-    if File.exist?(settings_file)
-      begin
-        settings = JSON.parse(File.read(settings_file))
-        @dark_mode = settings['dark_mode'] || false
-      rescue => e
-        puts "Failed to load settings: #{e.message}"
-      end
-    end
-  end
-
-  def save_settings
-    settings_file = File.join(@data_dir, 'settings.json')
-
-    settings = {
-      'dark_mode' => @dark_mode
-    }
-
-    begin
-      File.write(settings_file, JSON.pretty_generate(settings))
-    rescue => e
-      puts "Failed to save settings: #{e.message}"
-    end
-  end
-
   def open_new_window
     # Create a new browser window with the same application
     app = self.application
@@ -1926,7 +1882,7 @@ class BrowserWindow < Gtk::Window
     puts "Reloading browser with latest code..."
 
     # Save current session (tab URLs)
-    save_session
+    save_current_session
 
     # Spawn a new browser process with the same script
     script_path = File.expand_path($PROGRAM_NAME)
@@ -2041,42 +1997,13 @@ class BrowserWindow < Gtk::Window
     nil
   end
 
-  def save_session
-    session_file = File.join(@data_dir, 'session.json')
-
+  # Helper method to save current session (private - only called internally)
+  private def save_current_session
     # Collect all tab URLs
     tab_urls = @tabs.map { |tab| tab.uri || "https://www.google.com" }
-
-    session = {
-      'tabs' => tab_urls,
-      'current_tab_index' => @current_tab_index
-    }
-
-    begin
-      File.write(session_file, JSON.pretty_generate(session))
-    rescue => e
-      puts "Failed to save session: #{e.message}"
-    end
+    @session_manager.save_session(tab_urls, @current_tab_index)
   end
 
-  def load_session
-    session_file = File.join(@data_dir, 'session.json')
-
-    if File.exist?(session_file)
-      begin
-        session = JSON.parse(File.read(session_file))
-
-        # Delete session file after loading
-        File.delete(session_file)
-
-        return session
-      rescue => e
-        puts "Failed to load session: #{e.message}"
-      end
-    end
-
-    nil
-  end
 end
 
 # Main application
