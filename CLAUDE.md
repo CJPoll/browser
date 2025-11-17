@@ -25,32 +25,55 @@ The browser will start with a 1200x768 window. If no URL provided, it restores t
 
 ### Core Components
 
-- **`simple_browser.rb`**: Main browser window (BrowserWindow class)
-  - GTK application with WebKit2GTK WebView
-  - Manages toolbar, sidebar, and WebView container
-  - Handles keyboard shortcuts and mouse navigation
-  - Injects JavaScript for features like Picture-in-Picture
+**BrowserApplication** (`lib/browser_application.rb`):
+- GTK Application subclass managing app lifecycle
+- Single-instance enforcement via GTK ApplicationFlags
+- IPC monitoring (500ms timer checking `~/.local/share/toy-browser/pending-url`)
+- Signal handlers: activate, command-line, open
+- Window management: creates and presents BrowserWindow
 
-- **`history_manager.rb`**: SQLite-based browsing history
-  - Normalized schema: sites → pages → visits
-  - Stores data in `~/.local/share/toy-browser/history.db`
-  - Tracks visit timestamps, titles, and visit counts
+**BrowserWindow** (`lib/browser_window.rb`):
+- Main window orchestrator (thin layer coordinating components)
+- Owns component instances: Toolbar, Sidebar, Handlers, Managers
+- Sets up GTK signal handlers and callbacks
+- Public API for tab/queue/navigation operations
+- No business logic (delegates to components)
 
-- **`queue_manager.rb`**: SQLite-based read/watch/do queue
-  - FIFO queue with reordering capabilities
-  - Stores data in `~/.local/share/toy-browser/queue.db`
-  - Prevents duplicate URLs
-  - Supports thousands of entries with efficient position management
+**Tab** (`lib/tab.rb`):
+- Individual browser tab with WebView
+- WebKit experimental features enabled (FileSystemAccess, StorageAPI, etc.)
+- Manages tab-specific state (title, URI, favicon)
 
-- **`pip_window.rb`**: Picture-in-Picture floating window (WIP)
-  - Creates always-on-top window for video playback
-  - Currently supports direct video URLs only
-  - Native WebKit PiP API not available in WebKitGTK
+**UI Components** (`lib/ui/`):
+- `toolbar.rb` - Top toolbar with navigation controls and URL entry
+- `sidebar.rb` - Left sidebar container (tabs/history/queue mode switching)
+- `tab_list_view.rb` - Tabs list in sidebar
+- `history_list_view.rb` - History list in sidebar
+- `queue_list_view.rb` - Queue list in sidebar with drag-and-drop reordering
 
-- **`run`**: Wrapper script for launching browser
-  - Sets up asdf environment (Ruby version manager)
-  - Required for launching from desktop environment (xdg-open, desktop files)
-  - Passes arguments to simple_browser.rb
+**Handlers** (`lib/handlers/`):
+- `keyboard_handler.rb` - Keyboard shortcut routing (25+ shortcuts)
+- `mouse_handler.rb` - Mouse button navigation (back/forward buttons)
+- `navigation_handler.rb` - URL parsing and navigation logic
+
+**Managers** (`lib/managers/`):
+- `web_context_manager.rb` - WebKit context setup (stateless utility)
+- `settings_manager.rb` - Persistent settings (dark mode, etc.)
+- `session_manager.rb` - Save/restore window sessions
+- `favicon_manager.rb` - Favicon fetching with debouncing
+- `queue_metadata_worker.rb` - Background metadata fetching for queue
+
+**External Components** (project root):
+- `history_manager.rb` - SQLite-based browsing history
+- `queue_manager.rb` - SQLite-based read/watch/do queue
+- `video_popout_window.rb` - Picture-in-Picture floating window (WIP)
+- `run` - Wrapper script for asdf environment setup
+
+**Migration History**:
+- **Before Nov 2025**: Monolithic `simple_browser.rb` (~2200 lines)
+- **Phase 1-5 (Nov 2025)**: Extracted 14 classes into lib/ subdirectories
+- **Phase 6 (Nov 2025)**: Final refactoring - BrowserWindow and BrowserApplication extraction
+- **Result**: ~60 lines in simple_browser.rb entry point, 15 focused classes averaging ~150 lines each
 
 ### Single-Instance Behavior
 
