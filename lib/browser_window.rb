@@ -163,8 +163,22 @@ class BrowserWindow < Gtk::Window
     )
 
     # Wire queue callback AFTER sidebar creation (safe because queue isn't modified during init)
-    queue_list_view.on_queue_modified = ->(count) {
-      @sidebar_component.update_queue_header(count)
+    queue_list_view.on_queue_modified = ->(filtered_count, total_count) {
+      @sidebar_component.update_queue_header(filtered_count, total_count)
+      @sidebar_component.update_filter_bar(
+        queue_list_view.active_filter_tag_names,
+        queue_list_view
+      )
+    }
+
+    # Callback to get current URL for filter refresh
+    queue_list_view.on_get_current_url = -> {
+      current_tab&.webview&.uri
+    }
+
+    # Callback when filter state changes
+    queue_list_view.on_filter_state_changed = ->(active) {
+      @sidebar_component.update_filter_button_state(active)
     }
 
     @sidebar = @sidebar_component.widget

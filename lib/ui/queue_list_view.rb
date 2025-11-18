@@ -21,7 +21,7 @@ class QueueListView
     @on_queue_item_selected = nil
 
     # Callback invoked after queue is modified (for refreshing count in header)
-    # Signature: ->(count) { ... }
+    # Signature: ->(filtered_count, total_count) { ... }
     @on_queue_modified = nil
 
     # Callback invoked when tag pill is clicked
@@ -31,6 +31,20 @@ class QueueListView
     # Callback invoked when queue entry is right-clicked
     # Signature: ->(entry, event) { ... }
     @on_queue_entry_right_click = nil
+
+    # Filter state
+    @active_filter_tag_ids = []  # Array of tag IDs (AND logic)
+
+    # Sort state
+    @current_sort_mode = :position  # :position, :title, :date_published
+
+    # Callback to get current tab URL (for highlighting after filter)
+    # Signature: -> { String or nil }
+    @on_get_current_url = nil
+
+    # Callback when filter state changes (for sidebar button state)
+    # Signature: ->(active) { ... } where active is boolean
+    @on_filter_state_changed = nil
 
     # Set up row activation handler
     @list_widget.signal_connect("row-activated") do |_list, row|
@@ -70,6 +84,22 @@ class QueueListView
     @on_queue_entry_right_click = callback
   end
 
+  # Sets callback to get current URL
+  #
+  # @param callback [Proc] Callback returning URL string or nil
+  # @return [void]
+  def on_get_current_url=(callback)
+    @on_get_current_url = callback
+  end
+
+  # Sets callback when filter state changes
+  #
+  # @param callback [Proc] Callback accepting boolean (filters active)
+  # @return [void]
+  def on_filter_state_changed=(callback)
+    @on_filter_state_changed = callback
+  end
+
   # Generates RGB color for a tag name (deterministic, case-insensitive)
   # PUBLIC for testing
   # @param tag_name [String] Tag name to generate color for
@@ -84,6 +114,113 @@ class QueueListView
     hsl_to_rgb(hue, saturation, lightness)
   end
 
+  # Adds a tag to the active filters
+  #
+  # @param tag_id [Integer] Tag ID to add
+  # @return [void]
+  def add_filter_tag(tag_id)
+    return if @active_filter_tag_ids.include?(tag_id)
+
+    @active_filter_tag_ids << tag_id
+    apply_filters
+  end
+
+  # Removes a tag from active filters
+  #
+  # @param tag_id [Integer] Tag ID to remove
+  # @return [void]
+  def remove_filter_tag(tag_id)
+    @active_filter_tag_ids.delete(tag_id)
+    apply_filters
+  end
+
+  # Clears all active filters
+  #
+  # @return [void]
+  def clear_all_filters
+    @active_filter_tag_ids = []
+    apply_filters
+  end
+
+  # Adds filter for tag by name (used by tag pill click)
+  #
+  # @param tag_name [String] Tag name to filter by
+  # @return [void]
+  def filter_by_tag_name(tag_name)
+    tag = @queue_manager.find_tag_by_name(tag_name)
+    return unless tag
+
+    # Set as the only active filter (replaces existing filters)
+    @active_filter_tag_ids = [tag['id']]
+    apply_filters
+  end
+
+  # Returns whether any filters are active
+  #
+  # @return [Boolean] True if filters are active
+  def filters_active?
+    @active_filter_tag_ids.any?
+  end
+
+  # Returns array of active filter tag names (for display)
+  #
+  # @return [Array<String>] Tag names
+  def active_filter_tag_names
+    @active_filter_tag_ids.map do |tag_id|
+      tag = @queue_manager.find_tag_by_id(tag_id)
+      tag ? tag['name'] : nil
+    end.compact
+  end
+
+  # Removes a deleted tag from active filters
+  # Call this when a tag is deleted from the system
+  #
+  # @param tag_id [Integer] ID of the deleted tag
+  # @return [void]
+  def remove_deleted_tag_from_filters(tag_id)
+    return unless @active_filter_tag_ids.include?(tag_id)
+
+    @active_filter_tag_ids.delete(tag_id)
+    apply_filters
+  end
+
+  # Sets the current sort mode
+  #
+  # @param mode [Symbol] One of :position, :title, :date_published
+  # @return [void]
+  def set_sort_mode(mode)
+    return if @current_sort_mode == mode
+
+    @current_sort_mode = mode
+
+    # Get current URL for highlighting
+    current_url = @on_get_current_url&.call
+
+    # Refresh with new sort
+    refresh(current_url)
+  end
+
+  # Returns current sort mode
+  #
+  # @return [Symbol] Current sort mode
+  def current_sort_mode
+    @current_sort_mode
+  end
+
+  # Shows filter popover attached to the given widget
+  #
+  # @param relative_to [Gtk::Widget] Widget to position popover relative to
+  # @return [void]
+  def show_filter_popover(relative_to)
+    @filter_popover = create_filter_popover(relative_to)
+    @filter_popover.show_all
+
+    # Hide clear button if no filters active
+    @clear_filters_button.visible = @active_filter_tag_ids.any?
+
+    @filter_popover.popup
+  end
+
   # Refreshes the queue list display
   #
   # @param current_url [String, nil] Current tab's URL for highlighting (nil if no current tab)
@@ -92,27 +229,122 @@ class QueueListView
     # Clear existing items
     @list_widget.children.each { |child| @list_widget.remove(child) }
 
-    # Get all queue entries
-    entries = @queue_manager.all
+    # Get filtered and sorted entries
+    entries = get_filtered_sorted_entries
+    total_count = @queue_manager.count
 
-    entries.each do |entry|
-      row = create_queue_row(entry)
-      @list_widget.add(row)
+    # Check for empty state
+    if entries.empty? && @active_filter_tag_ids.any?
+      # Show empty state for "no matches"
+      show_empty_filter_state
+    else
+      # Render entries
+      entries.each do |entry|
+        row = create_queue_row(entry)
+        @list_widget.add(row)
 
-      # Highlight the queue entry that matches the current tab's URL
-      # Use fuzzy matching: queue URL params must be subset of current URL params
-      if current_url && entry['url'] && urls_match?(entry['url'], current_url)
-        @list_widget.select_row(row)
+        # Highlight the queue entry that matches the current tab's URL
+        if current_url && entry['url'] && urls_match?(entry['url'], current_url)
+          @list_widget.select_row(row)
+        end
       end
     end
 
     @list_widget.show_all
 
-    # Notify callback of new count
-    @on_queue_modified.call(entries.length) if @on_queue_modified
+    # Notify callback with filtered count and total count
+    @on_queue_modified.call(entries.length, total_count) if @on_queue_modified
   end
 
   private
+
+  # Gets queue entries with current filters and sort applied
+  #
+  # @return [Array<Hash>] Filtered and sorted entries
+  def get_filtered_sorted_entries
+    if @active_filter_tag_ids.empty?
+      # No filters - get all entries
+      entries = @queue_manager.all
+    else
+      # Apply AND filter
+      entries = @queue_manager.entries_with_tags(@active_filter_tag_ids)
+    end
+
+    # Apply sorting
+    case @current_sort_mode
+    when :position
+      # Already sorted by position from database
+      entries
+    when :title
+      entries.sort_by { |e| (e['title'] || e['url']).downcase }
+    when :date_published
+      # Sort by date descending, NULLs last
+      entries.sort do |a, b|
+        date_a = a['date']
+        date_b = b['date']
+
+        if date_a.nil? && date_b.nil?
+          0
+        elsif date_a.nil?
+          1  # NULLs go to end
+        elsif date_b.nil?
+          -1  # NULLs go to end
+        else
+          date_b <=> date_a  # Descending (newest first)
+        end
+      end
+    else
+      entries
+    end
+  end
+
+  # Applies current filters and refreshes display
+  def apply_filters
+    # Get current URL for highlighting
+    # Note: This requires callback to get current tab URL
+    current_url = @on_get_current_url&.call
+
+    # Refresh the display with current filters
+    refresh(current_url)
+
+    # Notify sidebar of filter state change
+    @on_filter_state_changed&.call(filters_active?)
+
+    # Update clear button visibility in popover if open
+    # Note: Use safe navigation since popover may be closed/destroyed
+    @clear_filters_button&.visible = filters_active?
+  end
+
+  # Shows empty state when filters match no entries
+  def show_empty_filter_state
+    # Create empty state container
+    empty_box = Gtk::Box.new(:vertical, 8)
+    empty_box.valign = :center
+    empty_box.halign = :center
+    empty_box.margin_top = 40
+    empty_box.margin_bottom = 40
+
+    # Message label
+    message_label = Gtk::Label.new("No entries match the selected filters.")
+    message_label.style_context.add_class("dim-label")
+    empty_box.pack_start(message_label, expand: false, fill: false, padding: 0)
+
+    # Clear filters button
+    clear_button = Gtk::Button.new(label: "Clear Filters")
+    clear_button.halign = :center
+    clear_button.signal_connect("clicked") do
+      clear_all_filters
+    end
+    empty_box.pack_start(clear_button, expand: false, fill: false, padding: 8)
+
+    # Wrap in ListBoxRow for consistency
+    row = Gtk::ListBoxRow.new
+    row.activatable = false
+    row.selectable = false
+    row.add(empty_box)
+
+    @list_widget.add(row)
+  end
 
   # Creates a list box row for a queue entry
   #
@@ -434,10 +666,9 @@ class QueueListView
 
     event_box.add(label)
 
-    # Accessibility (Addresses Gap #4 and Gap #18):
-    # Use "Tag: #{tag_name}" for Phase 2 (describes current state)
-    # Will change to "Filter by #{tag_name}" in Phase 4 when filtering is implemented
-    event_box.accessible.accessible_name = "Tag: #{tag_name}"
+    # Accessibility:
+    # Phase 4: "Filter by #{tag_name}" indicates clicking will apply filter
+    event_box.accessible.accessible_name = "Filter by #{tag_name}"
 
     # Click handler
     # UX Decision: Clicking tag pill should ONLY trigger tag filtering (no navigation)
@@ -461,15 +692,113 @@ class QueueListView
   end
 
   # Callback invoked when tag pill is clicked
-  # Opens filter UI with this tag selected (Phase 4 will implement filter UI)
+  # Filters queue to show only entries with this tag
   # PRIVATE method
   def on_tag_pill_clicked(tag_name)
-    # Phase 2: Log to console (temporary - will be removed in Phase 4)
-    # This puts statement is TEMPORARY for Phase 2 testing only
-    # Will be removed when Phase 4 implements filter UI
-    puts "Tag pill clicked: #{tag_name}"
+    # Phase 4: Filter by this tag (replaces Phase 2 console logging)
+    filter_by_tag_name(tag_name)
 
-    # Invoke callback if set
+    # Invoke external callback if set (for any additional handling)
     @on_tag_pill_clicked.call(tag_name) if @on_tag_pill_clicked
+  end
+
+  # Creates filter popover widget
+  #
+  # @param relative_to [Gtk::Widget] Widget to position popover relative to
+  # @return [Gtk::Popover] Configured popover
+  def create_filter_popover(relative_to)
+    popover = Gtk::Popover.new(relative_to)
+    popover.position = :bottom
+
+    # Main container
+    vbox = Gtk::Box.new(:vertical, 8)
+    vbox.margin_top = 12
+    vbox.margin_bottom = 12
+    vbox.margin_start = 12
+    vbox.margin_end = 12
+
+    # Title
+    title_label = Gtk::Label.new
+    title_label.markup = "<b>Filter by Tags</b>"
+    title_label.halign = :start
+    vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
+
+    # Separator
+    separator1 = Gtk::Separator.new(:horizontal)
+    vbox.pack_start(separator1, expand: false, fill: false, padding: 4)
+
+    # Scrolled window for tag checkboxes (in case of many tags)
+    scrolled = Gtk::ScrolledWindow.new
+    scrolled.set_policy(:never, :automatic)
+    scrolled.set_size_request(250, 600)  # Fixed width, min height for ~8 tags
+    scrolled.max_content_height = 300   # Max height before scrolling
+
+    # Tag checkboxes container
+    tags_box = Gtk::Box.new(:vertical, 4)
+
+    # Get tag usage counts
+    tag_counts = @queue_manager.tag_usage_counts
+
+    if tag_counts.empty?
+      # No tags exist - show message
+      no_tags_label = Gtk::Label.new("No tags available")
+      no_tags_label.style_context.add_class("dim-label")
+      tags_box.pack_start(no_tags_label, expand: false, fill: false, padding: 8)
+    else
+      # Create checkbox for each tag with usage count
+      tag_counts.each do |tag_data|
+        checkbox = create_filter_checkbox(tag_data)
+        tags_box.pack_start(checkbox, expand: false, fill: false, padding: 0)
+      end
+    end
+
+    scrolled.add(tags_box)
+    vbox.pack_start(scrolled, expand: true, fill: true, padding: 0)
+
+    # Separator before clear button
+    separator2 = Gtk::Separator.new(:horizontal)
+    vbox.pack_start(separator2, expand: false, fill: false, padding: 4)
+
+    # Clear filters button
+    @clear_filters_button = Gtk::Button.new(label: "Clear Filters")
+    @clear_filters_button.halign = :start
+    @clear_filters_button.signal_connect("clicked") do
+      clear_all_filters
+      @filter_popover.popdown
+    end
+    vbox.pack_start(@clear_filters_button, expand: false, fill: false, padding: 0)
+
+    popover.add(vbox)
+    popover
+  end
+
+  # Creates a filter checkbox for a tag
+  #
+  # @param tag_data [Hash] Hash with 'tag_id', 'tag_name', 'count' keys
+  # @return [Gtk::CheckButton] Configured checkbox
+  def create_filter_checkbox(tag_data)
+    tag_id = tag_data['tag_id']
+    tag_name = tag_data['tag_name']
+    count = tag_data['count']
+
+    checkbox = Gtk::CheckButton.new
+    checkbox.label = "#{tag_name} (#{count})"
+
+    # Check if tag is currently in filter
+    checkbox.active = @active_filter_tag_ids.include?(tag_id)
+
+    # Handle toggle
+    checkbox.signal_connect("toggled") do
+      if checkbox.active?
+        add_filter_tag(tag_id)
+      else
+        remove_filter_tag(tag_id)
+      end
+    end
+
+    # Store tag_id for reference
+    checkbox.instance_variable_set(:@tag_id, tag_id)
+
+    checkbox
   end
 end
