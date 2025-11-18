@@ -145,6 +145,10 @@ class BrowserWindow < Gtk::Window
       current_tab.webview.load_uri(entry['url']) if current_tab
     }
 
+    queue_list_view.on_queue_entry_right_click = ->(entry, event) {
+      show_queue_entry_context_menu(entry, event)
+    }
+
     # Create sidebar component
     sidebar_callbacks = {
       get_tabs: -> { [@tabs, @current_tab_index] },
@@ -313,7 +317,9 @@ class BrowserWindow < Gtk::Window
         next_item: -> { navigate_to_next_queue_item },
         previous_item: -> { navigate_to_previous_queue_item },
         move_current_up: -> { move_current_page_up_in_queue },
-        move_current_down: -> { move_current_page_down_in_queue }
+        move_current_down: -> { move_current_page_down_in_queue },
+        find_queue_entry_by_url: ->(url) { @queue_manager.find_by_url(url) },
+        show_tag_edit_dialog: ->(entry) { show_tag_edit_dialog(entry) }
       },
       zoom_actions: {
         zoom_in: -> { zoom_in },
@@ -1048,6 +1054,49 @@ class BrowserWindow < Gtk::Window
     # Collect all tab URLs
     tab_urls = @tabs.map { |tab| tab.uri || "https://www.google.com" }
     @session_manager.save_session(tab_urls, @current_tab_index)
+  end
+
+  # ========================================
+  # Tag Management
+  # ========================================
+
+  private
+
+  # Shows context menu for queue entry (right-click menu)
+  # @param entry [Hash] Queue entry with 'id', 'url', 'title'
+  # @param event [Gdk::EventButton] Button press event for popup positioning
+  def show_queue_entry_context_menu(entry, event)
+    menu = Gtk::Menu.new
+
+    # Edit Tags item
+    edit_tags_item = Gtk::MenuItem.new(label: "Edit Tags")
+    edit_tags_item.signal_connect("activate") do
+      show_tag_edit_dialog(entry)
+    end
+    menu.append(edit_tags_item)
+
+    # TODO Phase 3: Add "Refresh Metadata" item here
+
+    menu.show_all
+    menu.popup_at_pointer(event)
+  end
+
+  # Shows tag edit dialog for queue entry
+  # @param entry [Hash] Queue entry with 'id', 'url', 'title'
+  def show_tag_edit_dialog(entry)
+    dialog = TagEditDialog.new(
+      self,  # parent window
+      @queue_manager,
+      entry,
+      on_tags_changed: -> {
+        # Refresh queue sidebar if visible
+        # Check mode atomically - no race condition because GTK main loop is single-threaded
+        if @sidebar_component.mode == :queue
+          @sidebar_component.refresh_current_view
+        end
+      }
+    )
+    dialog.show
   end
 
 end

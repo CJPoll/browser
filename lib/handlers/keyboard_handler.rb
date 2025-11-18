@@ -189,6 +189,21 @@ class KeyboardHandler
       # Ctrl+Alt+Q: Remove current URL from queue and navigate to next
       @callbacks[:queue_actions][:remove_and_next].call
       true
+    when Gdk::Keyval::KEY_t
+      # Ctrl+Alt+T: Edit tags for current page (only if page is in queue)
+      current_tab = @callbacks[:tab_actions][:get_current].call
+      if current_tab
+        current_url = current_tab.webview.uri
+        # find_queue_entry_by_url callback returns entry hash or nil
+        entry = @callbacks[:queue_actions][:find_queue_entry_by_url].call(current_url)
+
+        if entry
+          @callbacks[:queue_actions][:show_tag_edit_dialog].call(entry)
+          return true
+        end
+      end
+
+      false  # Not in queue - do nothing (silent no-op)
     else
       false
     end
@@ -220,7 +235,7 @@ class KeyboardHandler
       sidebar_actions: [:toggle, :show_tabs, :show_history, :show_queue, :visible, :mode],
       tab_actions: [:create, :close_current, :next, :previous, :move_up, :move_down, :get_current],
       navigation_actions: [:go_back, :go_forward, :reload],
-      queue_actions: [:add_current, :remove_and_next, :next_item, :previous_item, :move_current_up, :move_current_down],
+      queue_actions: [:add_current, :remove_and_next, :next_item, :previous_item, :move_current_up, :move_current_down, :find_queue_entry_by_url, :show_tag_edit_dialog],
       zoom_actions: [:zoom_in, :zoom_out, :reset],
       mode_actions: [:toggle_dark_mode, :toggle_zen_mode, :toggle_inspector],
       window_actions: [:reload_browser, :open_new_window, :open_video_popout]
