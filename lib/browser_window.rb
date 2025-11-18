@@ -1075,7 +1075,12 @@ class BrowserWindow < Gtk::Window
     end
     menu.append(edit_tags_item)
 
-    # TODO Phase 3: Add "Refresh Metadata" item here
+    # Refresh Metadata item
+    refresh_metadata_item = Gtk::MenuItem.new(label: "Refresh Metadata")
+    refresh_metadata_item.signal_connect("activate") do
+      refresh_queue_entry_metadata(entry)
+    end
+    menu.append(refresh_metadata_item)
 
     menu.show_all
     menu.popup_at_pointer(event)
@@ -1097,6 +1102,28 @@ class BrowserWindow < Gtk::Window
       }
     )
     dialog.show
+  end
+
+  # Refreshes metadata for a queue entry
+  # Re-fetches page HTML and extracts title, favicon, YouTube metadata
+  # Re-applies auto-tagging if URL is YouTube (does NOT remove existing tags)
+  #
+  # Gap 11 RESOLUTION: Refresh metadata behavior with non-YouTube URLs
+  # The refresh handler calls fetch_metadata which ALWAYS checks youtube_video?(url).
+  # This means:
+  # 1. Non-YouTube URLs: Only title and favicon are refreshed (original behavior)
+  # 2. URLs that redirect to YouTube: Will be tagged on refresh (allows correction)
+  # 3. URLs initially mis-detected: Will be re-checked and tagged appropriately
+  # This is INTENDED behavior - refresh allows re-tagging if URL status changes.
+  #
+  # @param entry [Hash] Queue entry with 'id', 'url'
+  def refresh_queue_entry_metadata(entry)
+    return unless entry && entry['id'] && entry['url']
+
+    # Enqueue work for background metadata worker
+    @queue_metadata_worker.enqueue(entry['id'], entry['url'])
+
+    puts "Refreshing metadata for: #{entry['url']}"
   end
 
 end

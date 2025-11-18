@@ -6,6 +6,7 @@ require 'gtk3'
 
 # Load the application code
 require_relative '../queue_manager'
+require_relative '../lib/managers/queue_metadata_worker'
 require_relative '../lib/ui/queue_list_view'
 require_relative '../lib/ui/tag_edit_dialog'
 

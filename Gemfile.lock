@@ -1,9 +1,12 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    addressable (2.8.7)
+      public_suffix (>= 2.0.2, < 7.0)
     atk (4.3.3)
       glib2 (= 4.3.3)
       rake
+    bigdecimal (3.3.1)
     cairo (1.18.4)
       native-package-installer (>= 1.0.3)
       pkg-config (>= 1.2.2)
@@ -11,6 +14,9 @@ GEM
     cairo-gobject (4.3.3)
       cairo (>= 1.16.2)
       glib2 (= 4.3.3)
+    crack (1.0.1)
+      bigdecimal
+      rexml
     fiddle (1.1.8)
     gdk3 (4.3.3)
       cairo-gobject (= 4.3.3)
@@ -31,6 +37,7 @@ GEM
     gtk3 (4.3.3)
       atk (= 4.3.3)
       gdk3 (= 4.3.3)
+    hashdiff (1.2.1)
     json (2.16.0)
     matrix (0.4.3)
     mini_portile2 (2.8.9)
@@ -40,16 +47,22 @@ GEM
       cairo-gobject (= 4.3.3)
       gobject-introspection (= 4.3.3)
     pkg-config (1.6.4)
+    public_suffix (6.0.2)
     rake (13.3.1)
     red-colors (0.4.0)
       json
       matrix
+    rexml (3.4.4)
     sqlite3 (2.8.0)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.8.0-x86_64-linux-gnu)
     webkit2-gtk (4.3.3)
       gtk3 (= 4.3.3)
       rake
+    webmock (3.26.1)
+      addressable (>= 2.8.0)
+      crack (>= 0.3.2)
+      hashdiff (>= 0.4.0, < 2.0.0)
 
 PLATFORMS
   ruby
@@ -61,6 +74,7 @@ DEPENDENCIES
   rake (~> 13.0)
   sqlite3 (~> 2.4)
   webkit2-gtk (~> 4.3)
+  webmock (~> 3.18)
 
 BUNDLED WITH
    2.5.3

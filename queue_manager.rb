@@ -67,7 +67,7 @@ class QueueManager
   # Get all queue entries in order
   def all
     @db.execute(<<-SQL)
-      SELECT id, url, title, favicon, position, added_at
+      SELECT id, url, title, favicon, position, added_at, date
       FROM queue_entries
       ORDER BY position ASC
     SQL
@@ -76,7 +76,7 @@ class QueueManager
   # Get the first entry in the queue
   def first
     @db.get_first_row(<<-SQL)
-      SELECT id, url, title, favicon, position, added_at
+      SELECT id, url, title, favicon, position, added_at, date
       FROM queue_entries
       ORDER BY position ASC
       LIMIT 1
@@ -86,7 +86,7 @@ class QueueManager
   # Get entry by URL
   def find_by_url(url)
     @db.get_first_row(
-      "SELECT id, url, title, favicon, position, added_at FROM queue_entries WHERE url = ?",
+      "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE url = ?",
       [url]
     )
   end
@@ -94,7 +94,7 @@ class QueueManager
   # Get entry by ID
   def find_by_id(id)
     @db.get_first_row(
-      "SELECT id, url, title, favicon, position, added_at FROM queue_entries WHERE id = ?",
+      "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE id = ?",
       [id]
     )
   end
@@ -127,7 +127,7 @@ class QueueManager
 
     # Return the next entry (which now has the same position as the deleted one)
     @db.get_first_row(
-      "SELECT id, url, title, favicon, position, added_at FROM queue_entries WHERE position = ?",
+      "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE position = ?",
       [current_position]
     )
   end
@@ -202,6 +202,17 @@ class QueueManager
     @db.execute(
       "UPDATE queue_entries SET title = ? WHERE url = ?",
       [title, url]
+    )
+  end
+
+  # Update publish date for a URL
+  # Assumes date column exists (guaranteed by schema migration v1→v2)
+  def update_date(url, date_unix)
+    return unless url && date_unix
+
+    @db.execute(
+      "UPDATE queue_entries SET date = ? WHERE url = ?",
+      [date_unix, url]
     )
   end
 
