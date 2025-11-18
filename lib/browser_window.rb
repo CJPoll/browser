@@ -529,6 +529,17 @@ class BrowserWindow < Gtk::Window
       if hit_test_result.link_uri
         link_uri = hit_test_result.link_uri
 
+        # Remove "Open Link" (WEBKIT_CONTEXT_MENU_ACTION_OPEN_LINK) from default menu
+        items_to_remove = []
+        context_menu.items.each_with_index do |item, index|
+          # WebKit's "Open Link" action has stock action OPEN_LINK (1)
+          if item.stock_action == WebKit2Gtk::ContextMenuAction::OPEN_LINK
+            items_to_remove << index
+          end
+        end
+        # Remove items in reverse order to maintain correct indices
+        items_to_remove.reverse.each { |index| context_menu.remove(context_menu.items[index]) }
+
         # "Add to Queue" action
         queue_action = Gio::SimpleAction.new("add-to-queue-#{link_uri.hash.abs}", nil)
         queue_action.signal_connect("activate") do
@@ -564,11 +575,11 @@ class BrowserWindow < Gtk::Window
         end
 
         open_tab_item = WebKit2Gtk::ContextMenuItem.new(open_tab_action, "Open Link in New Tab", nil)
-        context_menu.prepend(open_tab_item)
+        context_menu.insert(open_tab_item, 1)  # Insert at position 1 (after "Add to Queue")
 
-        # Add separator after our custom items
+        # Add separator after our custom items and "Open Link in New Window"
         separator = WebKit2Gtk::ContextMenuItem.new()
-        context_menu.insert(separator, 2)
+        context_menu.insert(separator, 3)  # Position 3 (after Add to Queue, Open in New Tab, Open in New Window)
       end
 
       false  # Let the default menu show
