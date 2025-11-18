@@ -404,6 +404,10 @@ class QueueListView
     # Label with tag name
     label = Gtk::Label.new(tag_name)
     label.override_color(:normal, Gdk::RGBA.new(1.0, 1.0, 1.0, 1.0))  # White text
+    label.margin_top = 4
+    label.margin_bottom = 4
+    label.margin_start = 6
+    label.margin_end = 6
 
     # Override background color
     rgba = tag_color_rgba(tag_name)
@@ -417,7 +421,7 @@ class QueueListView
     css_provider = Gtk::CssProvider.new
     css_data = <<-CSS
       * {
-        padding: 2px 4px;
+        padding: 4px 6px;
         border-radius: 3px;
         font-size: 90%;
       }

@@ -1,6 +1,7 @@
 require 'net/http'
 require 'uri'
 require 'cgi'
+require 'time'
 
 # Background worker for fetching metadata (title and favicon) for queue entries
 class QueueMetadataWorker
@@ -63,17 +64,34 @@ class QueueMetadataWorker
   end
 
   # Fetches title and favicon for a queue entry
+  # Orchestrates between build_metadata and persist_metadata
   #
-  # @param entry_id [Integer] Queue entry ID (for logging only)
+  # @param entry_id [Integer] Queue entry ID
   # @param url [String] URL to fetch
   # @return [void]
   def fetch_metadata(entry_id, url)
+    metadata = build_metadata(url)
+    return unless metadata
+
+    persist_metadata(entry_id, url, metadata)
+
+    # Notify callback on main thread
+    if @on_metadata_fetched
+      GLib::Idle.add do
+        @on_metadata_fetched.call
+        false  # Don't repeat
+      end
+    end
+  end
+
+  # Fetches HTML and builds metadata structure
+  #
+  # @param url [String] URL to fetch
+  # @return [Hash, nil] Metadata hash or nil on fetch failure
+  def build_metadata(url)
     uri = URI.parse(url)
 
     # Fetch the page HTML
-    # NOTE: Current implementation does NOT rescue timeout exceptions
-    # HTTP client throws Net::OpenTimeout/Net::ReadTimeout but they are not caught
-    # They propagate to outer rescue in worker_loop
     response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
                                open_timeout: 5, read_timeout: 5) do |http|
       request = Net::HTTP::Get.new(uri)
@@ -81,98 +99,97 @@ class QueueMetadataWorker
       http.request(request)
     end
 
-    return unless response.is_a?(Net::HTTPSuccess)
+    return nil unless response.is_a?(Net::HTTPSuccess)
 
     html = response.body
 
-    # Initialize metadata variables
+    # Initialize metadata
     title = nil
     channel = nil
     publish_date = nil
-
-    # Check if this is a YouTube video
     is_youtube = youtube_video?(url)
 
     if is_youtube
-      # Try to extract YouTube metadata from JSON-LD
+      # Try JSON-LD first for title and date
       youtube_metadata = extract_youtube_metadata_from_jsonld(html)
 
       if youtube_metadata
         title = youtube_metadata[:title]
         channel = youtube_metadata[:channel]
         publish_date = youtube_metadata[:date]
-      else
-        # Fallback to oEmbed API
-        youtube_metadata = fetch_youtube_oembed_metadata(url)
+      end
 
-        if youtube_metadata
-          title = youtube_metadata[:title]
-          channel = youtube_metadata[:channel]
-          # publish_date remains nil (oEmbed doesn't provide it)
+      # oEmbed provides channel name (author_name) which JSON-LD doesn't have
+      # Use oEmbed if we're missing channel, or as fallback if JSON-LD failed
+      if channel.nil?
+        oembed_metadata = fetch_youtube_oembed_metadata(url)
+
+        if oembed_metadata
+          title ||= oembed_metadata[:title]
+          channel = oembed_metadata[:channel]
         end
       end
     end
 
-    # Fallback to basic title extraction if we don't have a title yet
+    # Fallback to basic title extraction
     title ||= extract_title_from_html(html)
 
     # Fetch favicon
     favicon_url = extract_favicon_url_from_html(html, uri)
-    favicon_data = nil
-    if favicon_url
-      favicon_data = fetch_favicon(favicon_url)
+    favicon_data = if favicon_url
+      fetch_favicon(favicon_url)
     else
-      # Try default /favicon.ico
-      default_favicon_url = "#{uri.scheme}://#{uri.host}/favicon.ico"
-      favicon_data = fetch_favicon(default_favicon_url)
+      fetch_favicon("#{uri.scheme}://#{uri.host}/favicon.ico")
     end
 
-    # Update database (safe from background thread)
-    @queue_manager.update_title(url, title) if title
-    @queue_manager.update_favicon(url, favicon_data) if favicon_data
-    @queue_manager.update_date(url, publish_date) if publish_date
+    {
+      title: title,
+      channel: channel,
+      publish_date: publish_date,
+      favicon_data: favicon_data,
+      is_youtube: is_youtube
+    }
+  end
+
+  # Persists metadata to queue manager
+  #
+  # @param entry_id [Integer] Queue entry ID
+  # @param url [String] URL of the entry
+  # @param metadata [Hash] Metadata hash from build_metadata
+  # @return [void]
+  def persist_metadata(entry_id, url, metadata)
+    # Update database
+    @queue_manager.update_title(url, metadata[:title]) if metadata[:title]
+    @queue_manager.update_favicon(url, metadata[:favicon_data]) if metadata[:favicon_data]
+    @queue_manager.update_date(url, metadata[:publish_date]) if metadata[:publish_date]
 
     # Auto-assign tags for YouTube videos
-    # Gap 12 RESOLUTION: Tag assignment return values are intentionally ignored
-    # QueueManager.assign_tag_by_name returns :assigned, :already_assigned, :invalid_entry, :invalid_params
-    # We ignore return values because:
-    # 1. :already_assigned is acceptable (no-op from UNIQUE constraint)
-    # 2. :invalid_entry should never happen (we verify entry exists above)
-    # 3. :invalid_params could happen if channel name is invalid, but we validate non-empty
-    # 4. Silent failure is acceptable - tags are best-effort enhancement, not critical
-    if is_youtube
-      entry = @queue_manager.find_by_id(entry_id)
-      if entry
-        # Assign "YouTube" tag (return value intentionally ignored)
-        @queue_manager.assign_tag_by_name(entry_id, "YouTube")
+    return unless metadata[:is_youtube]
 
-        # Assign channel tag if we have a channel name (return value intentionally ignored)
-        if channel && !channel.strip.empty?
-          @queue_manager.assign_tag_by_name(entry_id, channel.strip)
-        end
-      end
+    entry = @queue_manager.find_by_id(entry_id)
+    return unless entry
+
+    # Assign "YouTube" tag
+    @queue_manager.assign_tag_by_name(entry_id, "YouTube")
+
+    # Assign channel tag if available
+    channel = metadata[:channel]
+    if channel && !channel.strip.empty?
+      @queue_manager.assign_tag_by_name(entry_id, channel.strip)
     end
 
-    # Notify callback on main thread
-    # Gap 27 RESOLUTION: Callback context clarification
-    # The callback is invoked INSIDE the GLib::Idle.add block (already on main thread)
-    # This means the callback itself executes on the main thread and can safely call GTK methods
-    # Current implementation checks @sidebar_mode inside the GLib::Idle.add block
-    # The spec callback is invoked unconditionally here
-    # The sidebar mode check happens in simple_browser.rb when assigning the callback
-    if @on_metadata_fetched
-      GLib::Idle.add do
-        # Callback executes HERE (on main thread) - safe to call GTK methods
-        @on_metadata_fetched.call
-        false  # Don't repeat
-      end
+    # Auto-assign "ASMR" tag if title or channel contains "asmr" (case-insensitive)
+    title = metadata[:title] || ""
+    channel_str = channel || ""
+    if title.downcase.include?("asmr") || channel_str.downcase.include?("asmr")
+      @queue_manager.assign_tag_by_name(entry_id, "ASMR")
     end
   end
 
   # Checks if URL is a YouTube video
   #
   # @param url [String] URL to check
-  # @return [Boolean] True if URL is a YouTube video
+  # @return [Boolean] True if URL is a YouTube video or short
   private def youtube_video?(url)
     begin
       uri = URI.parse(url)
@@ -183,14 +200,20 @@ class QueueMetadataWorker
     # Check if host is YouTube
     return false unless ['www.youtube.com', 'youtube.com', 'm.youtube.com'].include?(uri.host)
 
-    # Check if path is /watch
-    return false unless uri.path == '/watch'
+    # Check for /watch?v= pattern
+    if uri.path == '/watch'
+      return false unless uri.query
+      params = CGI.parse(uri.query)
+      return params.key?('v') && !params['v'].empty? && !params['v'].first.empty?
+    end
 
-    # Check if v parameter exists
-    return false unless uri.query
+    # Check for /shorts/<video-id> pattern
+    if uri.path.start_with?('/shorts/')
+      video_id = uri.path.sub('/shorts/', '')
+      return !video_id.empty?
+    end
 
-    params = CGI.parse(uri.query)
-    params.key?('v') && !params['v'].empty? && !params['v'].first.empty?
+    false
   end
 
   # Extracts YouTube metadata from JSON-LD structured data
@@ -210,10 +233,17 @@ class QueueMetadataWorker
         # Check if this is a VideoObject schema
         next unless data['@type'] == 'VideoObject'
 
+        # DEBUG: Print full JSON-LD structure
+        require 'json'
+        puts "DEBUG JSON-LD full structure:"
+        puts JSON.pretty_generate(data)
+
         # Extract metadata
         title = data['name'] || data['headline']
         channel = data['author'] || data['channelName']
         channel = channel['name'] if channel.is_a?(Hash)  # Handle nested author object
+
+        puts "DEBUG extracted channel: #{channel.inspect}"
 
         # Parse date (ISO 8601 format)
         date_str = data['uploadDate'] || data['datePublished']
