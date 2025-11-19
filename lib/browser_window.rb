@@ -49,7 +49,7 @@ class BrowserWindow < Gtk::Window
 
     # === Settings State ===
     @dark_mode = @settings_manager.dark_mode
-    @sidebar_width_ratio = 0.15  # Always 15%, not persisted
+    @sidebar_width_ratio = 0.30  # Always 30%, not persisted
 
     # Apply dark mode setting to GTK
     gtk_settings = Gtk::Settings.default
@@ -181,6 +181,9 @@ class BrowserWindow < Gtk::Window
       @sidebar_component.update_filter_button_state(active)
     }
 
+    # Default to showing queue view
+    @sidebar_component.show_queue
+
     @sidebar = @sidebar_component.widget
     @paned.pack1(@sidebar, resize: true, shrink: true)
     # Don't set position yet - wait until window is shown
@@ -200,7 +203,7 @@ class BrowserWindow < Gtk::Window
     @initial_map_done = false
     signal_connect("map-event") do
       unless @initial_map_done
-        # Calculate sidebar width based on window width (always 15%)
+        # Calculate sidebar width based on window width (always 30%)
         window_width = allocation.width
         sidebar_width = (window_width * @sidebar_width_ratio).to_i
         @sidebar_component.update_width(sidebar_width)
@@ -1080,19 +1083,26 @@ class BrowserWindow < Gtk::Window
   # @param entry [Hash] Queue entry with 'id', 'url', 'title'
   # @param event [Gdk::EventButton] Button press event for popup positioning
   def show_queue_entry_context_menu(entry, event)
+    # Copy entry data to avoid reference invalidation after menu destruction
+    entry_id = entry['id']
+    entry_url = entry['url']
+    entry_title = entry['title']
+
     menu = Gtk::Menu.new
 
     # Edit Tags item
     edit_tags_item = Gtk::MenuItem.new(label: "Edit Tags")
     edit_tags_item.signal_connect("activate") do
-      show_tag_edit_dialog(entry)
+      # Re-fetch entry from database to ensure fresh data
+      fresh_entry = @queue_manager.find_by_id(entry_id)
+      show_tag_edit_dialog(fresh_entry) if fresh_entry
     end
     menu.append(edit_tags_item)
 
     # Refresh Metadata item
     refresh_metadata_item = Gtk::MenuItem.new(label: "Refresh Metadata")
     refresh_metadata_item.signal_connect("activate") do
-      refresh_queue_entry_metadata(entry)
+      refresh_queue_entry_metadata({'id' => entry_id, 'url' => entry_url})
     end
     menu.append(refresh_metadata_item)
 

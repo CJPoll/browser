@@ -2,6 +2,7 @@ require 'net/http'
 require 'uri'
 require 'cgi'
 require 'time'
+require_relative 'auto_tagger'
 
 # Background worker for fetching metadata (title and favicon) for queue entries
 class QueueMetadataWorker
@@ -13,6 +14,7 @@ class QueueMetadataWorker
     @work_queue = Thread::Queue.new
     @running = true
     @worker_thread = Thread.new { worker_loop }
+    @auto_tagger = create_auto_tagger
 
     # Callback invoked on main thread after metadata is fetched
     # Signature: -> { ... }
@@ -164,26 +166,102 @@ class QueueMetadataWorker
     @queue_manager.update_date(url, metadata[:publish_date]) if metadata[:publish_date]
 
     # Auto-assign tags for YouTube videos
-    return unless metadata[:is_youtube]
+    if metadata[:is_youtube]
+      entry = @queue_manager.find_by_id(entry_id)
+      return unless entry
 
-    entry = @queue_manager.find_by_id(entry_id)
-    return unless entry
+      # Assign "YouTube" tag
+      @queue_manager.assign_tag_by_name(entry_id, "YouTube")
 
-    # Assign "YouTube" tag
-    @queue_manager.assign_tag_by_name(entry_id, "YouTube")
-
-    # Assign channel tag if available
-    channel = metadata[:channel]
-    if channel && !channel.strip.empty?
-      @queue_manager.assign_tag_by_name(entry_id, channel.strip)
+      # Assign channel tag if available
+      channel = metadata[:channel]
+      if channel && !channel.strip.empty?
+        @queue_manager.assign_tag_by_name(entry_id, channel.strip)
+      end
     end
 
-    # Auto-assign "ASMR" tag if title or channel contains "asmr" (case-insensitive)
-    title = metadata[:title] || ""
-    channel_str = channel || ""
-    if title.downcase.include?("asmr") || channel_str.downcase.include?("asmr")
-      @queue_manager.assign_tag_by_name(entry_id, "ASMR")
+    # Apply pattern-based auto-tagging rules
+    auto_tag_metadata = {
+      title: metadata[:title],
+      channel: metadata[:channel],
+      url: url
+    }
+
+    tags = @auto_tagger.tags_for(auto_tag_metadata)
+    tags.each do |tag_name|
+      @queue_manager.assign_tag_by_name(entry_id, tag_name)
     end
+  end
+
+  # Creates and configures the auto-tagger with rules
+  #
+  # @return [AutoTagger] Configured auto-tagger
+  def create_auto_tagger
+    tagger = AutoTagger.new
+
+    # ASMR content
+    tagger.add(
+      tag_name: "ASMR",
+      patterns: ["asmr"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    # Gaming content (general)
+    tagger.add(
+      tag_name: "Gaming",
+      patterns: ["gaming", "video game", "video games", "steam sale", "playthrough", "gameplay", "let's play", "silksong", "terraria", "azaxe", "game maker's toolkit", "adam millard"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    # Specific games
+    tagger.add(
+      tag_name: "Silksong",
+      patterns: ["silksong"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    tagger.add(
+      tag_name: "Terraria",
+      patterns: ["terraria"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    tagger.add(
+      tag_name: "Smash Bros",
+      patterns: ["smash", "azaxe"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    # Game design content
+    tagger.add(
+      tag_name: "Game Design",
+      patterns: ["game maker's toolkit", "adam millard", "game design"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    # Linux content
+    tagger.add(
+      tag_name: "Linux",
+      patterns: ["linux"],
+      fields: [:title, :channel],
+      site: "youtube.com"
+    )
+
+    # Tech content
+    tagger.add(
+      tag_name: "Tech",
+      patterns: ["apple", "microsoft", "steam", "framework", "laptop", "steam deck", "window manager", "arch", "gentoo", "ubuntu", "red hat", "redhat", "operating system", "linux", "aws"],
+      fields: :title,
+      site: "youtube.com"
+    )
+
+    tagger
   end
 
   # Checks if URL is a YouTube video

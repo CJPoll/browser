@@ -469,7 +469,8 @@ class Sidebar
     vbox.pack_start(@sort_date_radio, expand: false, fill: false, padding: 2)
 
     popover.add(vbox)
-    popover.show_all
+    # Show content widgets but not the popover itself
+    vbox.show_all
     popover
   end
 
