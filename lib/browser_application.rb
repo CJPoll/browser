@@ -15,6 +15,7 @@ class BrowserApplication < Gtk::Application
 
     @original_argv = original_argv
     @main_window = nil
+    @windows = []  # Track all windows for cleanup
     @last_ipc_check = Time.now.to_f
 
     # Set up signal handlers
@@ -38,8 +39,7 @@ class BrowserApplication < Gtk::Application
   def on_activate
     if @main_window.nil?
       # First launch - create new window
-      @main_window = BrowserWindow.new
-      @main_window.set_application(self)
+      @main_window = create_window
       @main_window.show_all
 
       # Set up IPC file monitoring for URLs from other instances
@@ -48,6 +48,31 @@ class BrowserApplication < Gtk::Application
       # Window already exists - just present it
       @main_window.present
     end
+  end
+
+  # Creates a new browser window and tracks it
+  #
+  # @param url [String, nil] Optional URL to load in the new window
+  # @return [BrowserWindow] The created window
+  def create_window(url = nil)
+    window = BrowserWindow.new
+    window.set_application(self)
+    @windows << window
+
+    # Remove from tracking when window is destroyed
+    window.signal_connect("destroy") do
+      @windows.delete(window)
+      @main_window = @windows.first if @main_window == window
+    end
+
+    # Load URL if provided
+    if url && !url.empty?
+      # Navigate the first tab to the URL
+      tabs = window.instance_variable_get(:@tabs)
+      tabs.first&.webview&.load_uri(url)
+    end
+
+    window
   end
 
   # Sets up IPC file monitoring timer
@@ -59,13 +84,25 @@ class BrowserApplication < Gtk::Application
       if File.exist?(IPC_URL_FILE)
         begin
           content = File.read(IPC_URL_FILE)
-          url, timestamp = content.split("\n")
-          timestamp = timestamp.to_f
+          parts = content.split("\n")
+          url = parts[0]
+          timestamp = parts[1].to_f
+          new_window = parts[2] == "true"
 
-          # Only process if this is a new URL (timestamp after last check)
+          # Only process if this is a new request (timestamp after last check)
           if timestamp > @last_ipc_check
-            @main_window.create_new_tab(url)
-            @main_window.present
+            if new_window
+              # Create a new window
+              window = create_window(url)
+              window.show_all
+              window.present
+            else
+              # Open in existing window as new tab
+              if url && !url.empty?
+                @main_window.create_new_tab(url)
+              end
+              @main_window.present
+            end
             @last_ipc_check = timestamp
             # Delete the file after processing
             File.delete(IPC_URL_FILE)

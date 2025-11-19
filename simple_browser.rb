@@ -7,14 +7,21 @@ require 'fileutils'
 # Capture ARGV before GTK Application consumes it
 ORIGINAL_ARGV = ARGV.dup
 
+# Parse --new-window flag
+new_window = ORIGINAL_ARGV.delete('--new-window') ? true : false
+
 # IPC file for passing URLs between instances
 IPC_DIR = File.join(Dir.home, '.local/share/toy-browser')
 FileUtils.mkdir_p(IPC_DIR)
 IPC_URL_FILE = File.join(IPC_DIR, 'pending-url')
 
 # If we have a URL argument, write it to the IPC file
+# Format: url\ntimestamp\nnew_window
 if ORIGINAL_ARGV.length > 0 && !ORIGINAL_ARGV[0].empty?
-  File.write(IPC_URL_FILE, "#{ORIGINAL_ARGV[0]}\n#{Time.now.to_f}")
+  File.write(IPC_URL_FILE, "#{ORIGINAL_ARGV[0]}\n#{Time.now.to_f}\n#{new_window}")
+elsif new_window
+  # --new-window without URL - open blank window
+  File.write(IPC_URL_FILE, "\n#{Time.now.to_f}\n#{new_window}")
 end
 
 require 'gtk3'
