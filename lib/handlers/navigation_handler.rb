@@ -39,6 +39,9 @@ class NavigationHandler
       url = "https://www.google.com/search?q=#{query}"
     end
 
+    # Normalize URL (e.g., rewrite youtube.com to www.youtube.com)
+    url = normalize_url(url)
+
     current_tab = @callbacks[:get_current_tab].call
     current_tab.webview.load_uri(url)
 
@@ -53,6 +56,29 @@ class NavigationHandler
   end
 
   private
+
+  # Normalizes URLs for sites that require specific subdomains
+  #
+  # @param url [String] The URL to normalize
+  # @return [String] The normalized URL
+  def normalize_url(url)
+    return url unless url
+
+    begin
+      uri = URI.parse(url)
+
+      # YouTube requires www subdomain for proper auth cookie handling
+      if uri.host == 'youtube.com'
+        uri.host = 'www.youtube.com'
+        return uri.to_s
+      end
+
+      url
+    rescue URI::InvalidURIError
+      # If URL parsing fails, return original
+      url
+    end
+  end
 
   # Validates that all required callbacks are present
   #

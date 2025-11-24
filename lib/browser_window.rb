@@ -38,6 +38,7 @@ class BrowserWindow < Gtk::Window
     # === Core Managers ===
     @history_manager = HistoryManager.new
     @queue_manager = QueueManager.new
+    @popup_manager = PopupManager.new
     @settings_manager = SettingsManager.new(data_dir: @data_dir)
     @session_manager = SessionManager.new(data_dir: @data_dir)
 
@@ -62,6 +63,10 @@ class BrowserWindow < Gtk::Window
     # === History Tracking ===
     # Track last recorded visit to avoid duplicates
     @last_recorded_visit = nil
+
+    # === Popup Notification Tracking ===
+    # Track hosts with active notifications to avoid duplicates
+    @popup_notification_hosts = Set.new
 
     # === Tab Management ===
     @tabs = []
@@ -234,9 +239,13 @@ class BrowserWindow < Gtk::Window
       @favicon_manager = nil
     end
 
+    # Right side content area (notification bar + webview)
+    @content_vbox = Gtk::Box.new(:vertical, 0)
+    @paned.pack2(@content_vbox, resize: true, shrink: false)
+
     # Scrolled window for webview (will swap webviews when switching tabs)
     @webview_container = Gtk::ScrolledWindow.new
-    @paned.pack2(@webview_container, resize: true, shrink: false)
+    @content_vbox.pack_start(@webview_container, expand: true, fill: true, padding: 0)
 
     # Only restore session if no URL was passed as argument
     if ORIGINAL_ARGV.empty?
@@ -606,6 +615,47 @@ class BrowserWindow < Gtk::Window
       end
 
       false  # Let the default menu show
+    end
+
+    # Handle popup requests (window.open, target="_blank", etc.)
+    tab.webview.signal_connect("create") do |webview, navigation_action|
+      # Get the destination URL from the navigation action
+      request = navigation_action.request
+      destination_url = request&.uri
+
+      if destination_url
+        # Check if destination host is whitelisted
+        if @popup_manager.allowed?(destination_url)
+          # Check if this is an OAuth URL that needs a floating window
+          if oauth_popup_url?(destination_url)
+            # Create popup window for OAuth
+            popup = PopupWindow.new(tab.webview, self)
+            puts "OAuth popup opened: #{destination_url}"
+            popup.webview
+          else
+            # Open in new tab for regular popups
+            create_new_tab(destination_url, switch_to: true)
+            puts "Popup opened in new tab: #{destination_url}"
+            nil  # Return nil since we handled it ourselves
+          end
+        else
+          # Block popup and show notification
+          begin
+            uri = URI.parse(destination_url)
+            host = uri.host
+            if host
+              show_popup_blocked_notification(host, destination_url, tab.webview)
+              puts "Popup blocked from: #{host}"
+            end
+          rescue URI::InvalidURIError
+            # Invalid URL, silently block
+          end
+
+          nil  # Return nil to block the popup
+        end
+      else
+        nil  # No URL, block
+      end
     end
   end
 
@@ -1148,6 +1198,82 @@ class BrowserWindow < Gtk::Window
     @queue_metadata_worker.enqueue(entry['id'], entry['url'])
 
     puts "Refreshing metadata for: #{entry['url']}"
+  end
+
+  # Shows a popup blocked notification bar
+  # Creates the bar dynamically and destroys it when dismissed
+  # Only one notification per host is shown
+  # When allowed, automatically opens the popup
+  #
+  # @param host [String] Host that was blocked
+  # @param destination_url [String] Full URL of the blocked popup
+  # @param related_view [WebKit2Gtk::WebView] WebView to relate popup to
+  def show_popup_blocked_notification(host, destination_url, related_view)
+    # Don't create duplicate notifications for the same host
+    return if @popup_notification_hosts.include?(host)
+    @popup_notification_hosts.add(host)
+
+    notification_bar = PopupNotificationBar.new(
+      on_allow: ->(allowed_host) {
+        @popup_manager.allow("https://#{allowed_host}")
+        @popup_notification_hosts.delete(allowed_host)
+
+        # Automatically open the popup
+        if oauth_popup_url?(destination_url)
+          # OAuth needs a floating window
+          popup = PopupWindow.new(related_view, self)
+          popup.webview.load_uri(destination_url)
+          popup.show_all
+        else
+          # Regular popups open in a new tab
+          create_new_tab(destination_url, switch_to: true)
+        end
+
+        puts "Allowed popups for: #{allowed_host}"
+      },
+      on_dismiss: -> {
+        @popup_notification_hosts.delete(host)
+      }
+    )
+    notification_bar.set_host(host)
+
+    # Add to top of content area
+    @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(notification_bar.widget, 0)
+    notification_bar.widget.show_all
+  end
+
+  # Checks if a URL is an OAuth popup that needs a floating window
+  # These URLs need separate windows to properly communicate back to the opener
+  #
+  # @param url [String] URL to check
+  # @return [Boolean] True if this is an OAuth URL
+  def oauth_popup_url?(url)
+    return false unless url
+
+    begin
+      uri = URI.parse(url)
+      host = uri.host&.downcase
+
+      # Google OAuth
+      return true if host == 'accounts.google.com'
+
+      # Firebase auth handlers (used by many sites for OAuth)
+      return true if host&.end_with?('.firebaseapp.com') && uri.path&.include?('auth')
+
+      # Apple OAuth
+      return true if host == 'appleid.apple.com'
+
+      # Microsoft OAuth
+      return true if host == 'login.microsoftonline.com' || host == 'login.live.com'
+
+      # GitHub OAuth
+      return true if host == 'github.com' && uri.path&.start_with?('/login/oauth')
+
+      false
+    rescue URI::InvalidURIError
+      false
+    end
   end
 
 end

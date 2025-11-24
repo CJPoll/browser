@@ -1,6 +1,8 @@
 require 'sqlite3'
 require 'uri'
 require 'fileutils'
+require 'monitor'
+require 'cgi'
 
 class QueueManager
   def initialize(db_path = nil)
@@ -13,8 +15,17 @@ class QueueManager
     @db.execute("PRAGMA encoding = 'UTF-8'")
     # Enable foreign key constraints
     @db.execute("PRAGMA foreign_keys = ON")
+    # Monitor for thread-safe database access (reentrant)
+    @mutex = Monitor.new
     create_tables
     migrate_schema
+  end
+
+  # Executes a block with mutex synchronization
+  # @yield Block to execute with database lock
+  # @return Result of the block
+  def synchronize(&block)
+    @mutex.synchronize(&block)
   end
 
   def create_tables
@@ -66,11 +77,13 @@ class QueueManager
 
   # Get all queue entries in order
   def all
-    @db.execute(<<-SQL)
-      SELECT id, url, title, favicon, position, added_at, date
-      FROM queue_entries
-      ORDER BY position ASC
-    SQL
+    @mutex.synchronize do
+      @db.execute(<<-SQL)
+        SELECT id, url, title, favicon, position, added_at, date
+        FROM queue_entries
+        ORDER BY position ASC
+      SQL
+    end
   end
 
   # Get the first entry in the queue
@@ -83,53 +96,74 @@ class QueueManager
     SQL
   end
 
-  # Get entry by URL
+  # Get entry by URL (exact match)
   def find_by_url(url)
-    @db.get_first_row(
-      "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE url = ?",
-      [url]
-    )
+    @mutex.synchronize do
+      @db.get_first_row(
+        "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE url = ?",
+        [url]
+      )
+    end
+  end
+
+  # Get entry by URL using flexible matching (handles YouTube parameter changes)
+  #
+  # @param url [String] URL to search for
+  # @return [Hash, nil] Queue entry or nil if not found
+  def find_by_url_fuzzy(url)
+    @mutex.synchronize do
+      # Get all entries and find the first one that matches
+      entries = @db.execute(
+        "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries"
+      )
+      entries.find { |entry| urls_match?(entry['url'], url) }
+    end
   end
 
   # Get entry by ID
   def find_by_id(id)
-    @db.get_first_row(
-      "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE id = ?",
-      [id]
-    )
+    @mutex.synchronize do
+      @db.get_first_row(
+        "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE id = ?",
+        [id]
+      )
+    end
   end
 
   # Remove an entry by URL and return the next entry
+  # Uses fuzzy matching to handle URL parameter changes (e.g., YouTube tracking params)
   def remove_by_url(url)
-    entry = find_by_url(url)
+    entry = find_by_url_fuzzy(url)
     return nil unless entry
 
-    remove_by_id(entry['id'])
+    return remove_by_id(entry['id'])
   end
 
   # Remove an entry by ID and return the next entry
   def remove_by_id(id)
-    entry = find_by_id(id)
-    return nil unless entry
+    @mutex.synchronize do
+      entry = find_by_id(id)
+      return nil unless entry
 
-    current_position = entry['position']
+      current_position = entry['position']
 
-    @db.transaction do
-      # Delete the entry
-      @db.execute("DELETE FROM queue_entries WHERE id = ?", [id])
+      @db.transaction do
+        # Delete the entry
+        @db.execute("DELETE FROM queue_entries WHERE id = ?", [id])
 
-      # Renumber positions to close the gap
-      @db.execute(
-        "UPDATE queue_entries SET position = position - 1 WHERE position > ?",
+        # Renumber positions to close the gap
+        @db.execute(
+          "UPDATE queue_entries SET position = position - 1 WHERE position > ?",
+          [current_position]
+        )
+      end
+
+      # Return the next entry (which now has the same position as the deleted one)
+      @db.get_first_row(
+        "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE position = ?",
         [current_position]
       )
     end
-
-    # Return the next entry (which now has the same position as the deleted one)
-    @db.get_first_row(
-      "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries WHERE position = ?",
-      [current_position]
-    )
   end
 
   # Move an entry to a new position
@@ -189,20 +223,24 @@ class QueueManager
   def update_favicon(url, favicon_data)
     return unless url && favicon_data
 
-    @db.execute(
-      "UPDATE queue_entries SET favicon = ? WHERE url = ?",
-      [favicon_data, url]
-    )
+    @mutex.synchronize do
+      @db.execute(
+        "UPDATE queue_entries SET favicon = ? WHERE url = ?",
+        [favicon_data, url]
+      )
+    end
   end
 
   # Update title for a URL
   def update_title(url, title)
     return unless url && title
 
-    @db.execute(
-      "UPDATE queue_entries SET title = ? WHERE url = ?",
-      [title, url]
-    )
+    @mutex.synchronize do
+      @db.execute(
+        "UPDATE queue_entries SET title = ? WHERE url = ?",
+        [title, url]
+      )
+    end
   end
 
   # Update publish date for a URL
@@ -210,10 +248,12 @@ class QueueManager
   def update_date(url, date_unix)
     return unless url && date_unix
 
-    @db.execute(
-      "UPDATE queue_entries SET date = ? WHERE url = ?",
-      [date_unix, url]
-    )
+    @mutex.synchronize do
+      @db.execute(
+        "UPDATE queue_entries SET date = ? WHERE url = ?",
+        [date_unix, url]
+      )
+    end
   end
 
   # Get count of entries
@@ -345,17 +385,19 @@ class QueueManager
     # Validate length (application-level check before database constraint)
     return nil if tag_name.length > 100
 
-    # Check for existing tag (case-insensitive)
-    existing = @db.get_first_row(
-      "SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE",
-      [tag_name]
-    )
+    @mutex.synchronize do
+      # Check for existing tag (case-insensitive)
+      existing = @db.get_first_row(
+        "SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE",
+        [tag_name]
+      )
 
-    return existing['id'] if existing
+      return existing['id'] if existing
 
-    # Create new tag (database CHECK constraint also enforces length)
-    @db.execute("INSERT INTO tags (name) VALUES (?)", [tag_name])
-    @db.last_insert_row_id
+      # Create new tag (database CHECK constraint also enforces length)
+      @db.execute("INSERT INTO tags (name) VALUES (?)", [tag_name])
+      @db.last_insert_row_id
+    end
   end
 
   # Find tag by name (case-insensitive lookup)
@@ -451,21 +493,23 @@ class QueueManager
     tag = find_tag_by_id(tag_id)
     return :invalid_tag unless tag
 
-    # Check if already assigned
-    existing = @db.get_first_value(
-      "SELECT id FROM queue_entry_tag_assignments WHERE queue_entry_id = ? AND tag_id = ?",
-      [entry_id, tag_id]
-    )
+    @mutex.synchronize do
+      # Check if already assigned
+      existing = @db.get_first_value(
+        "SELECT id FROM queue_entry_tag_assignments WHERE queue_entry_id = ? AND tag_id = ?",
+        [entry_id, tag_id]
+      )
 
-    return :already_assigned if existing
+      return :already_assigned if existing
 
-    # Create assignment
-    @db.execute(
-      "INSERT INTO queue_entry_tag_assignments (queue_entry_id, tag_id) VALUES (?, ?)",
-      [entry_id, tag_id]
-    )
+      # Create assignment
+      @db.execute(
+        "INSERT INTO queue_entry_tag_assignments (queue_entry_id, tag_id) VALUES (?, ?)",
+        [entry_id, tag_id]
+      )
 
-    :assigned
+      :assigned
+    end
   end
 
   # Remove tag assignment from a queue entry
@@ -553,13 +597,15 @@ class QueueManager
   def tags_for_entry(entry_id)
     return [] if entry_id.nil?
 
-    @db.execute(<<-SQL, [entry_id])
-      SELECT t.id, t.name
-      FROM tags t
-      INNER JOIN queue_entry_tag_assignments qeta ON t.id = qeta.tag_id
-      WHERE qeta.queue_entry_id = ?
-      ORDER BY t.name COLLATE NOCASE ASC
-    SQL
+    @mutex.synchronize do
+      @db.execute(<<-SQL, [entry_id])
+        SELECT t.id, t.name
+        FROM tags t
+        INNER JOIN queue_entry_tag_assignments qeta ON t.id = qeta.tag_id
+        WHERE qeta.queue_entry_id = ?
+        ORDER BY t.name COLLATE NOCASE ASC
+      SQL
+    end
   end
 
   # Get all queue entries with a specific tag
@@ -653,5 +699,53 @@ class QueueManager
     @db.execute("DELETE FROM tags WHERE id = ?", [tag_id])
 
     @db.changes > 0 ? :deleted : :not_found
+  end
+
+  private
+
+  # Compares two URLs with bidirectional subset parameter matching
+  #
+  # Handles cases where:
+  # - Queue URL has extra params (YouTube strips them during playback)
+  # - Current URL has extra params (timestamp added during playback)
+  #
+  # @param queue_url [String] URL from queue entry
+  # @param current_url [String] Current tab's URL
+  # @return [Boolean] True if URLs match (same base + compatible params)
+  def urls_match?(queue_url, current_url)
+    # Parse both URLs
+    begin
+      queue_uri = URI.parse(queue_url)
+      current_uri = URI.parse(current_url)
+    rescue URI::InvalidURIError
+      return false
+    end
+
+    # Compare base URLs (scheme, host, path) - ignore trailing slashes
+    queue_base = "#{queue_uri.scheme}://#{queue_uri.host}#{queue_uri.path}".sub(/\/$/, '')
+    current_base = "#{current_uri.scheme}://#{current_uri.host}#{current_uri.path}".sub(/\/$/, '')
+    return false unless queue_base == current_base
+
+    # Parse query parameters
+    queue_params = queue_uri.query ? CGI.parse(queue_uri.query) : {}
+    current_params = current_uri.query ? CGI.parse(current_uri.query) : {}
+
+    # Check if either URL's params are a subset of the other
+    # This handles both cases:
+    # 1. Queue has extra params (YouTube strips them) - current is subset of queue
+    # 2. Current has extra params - queue is subset of current
+    params_are_subset?(queue_params, current_params) || params_are_subset?(current_params, queue_params)
+  end
+
+  # Checks if subset params are all present in superset params
+  #
+  # @param subset_params [Hash] Parameters that should all be in superset
+  # @param superset_params [Hash] Parameters that should contain all of subset
+  # @return [Boolean] True if all subset params exist in superset with same values
+  def params_are_subset?(subset_params, superset_params)
+    # Check if all params in subset exist in superset with same values
+    subset_params.all? do |key, values|
+      superset_params[key] == values
+    end
   end
 end
