@@ -180,6 +180,17 @@ class HistoryManager
     SQL
   end
 
+  # Delete a specific visit by ID
+  #
+  # @param visit_id [Integer] The visit ID to delete
+  # @return [Boolean] True if deleted, false if not found
+  def delete_visit(visit_id)
+    return false unless visit_id
+
+    @db.execute("DELETE FROM visits WHERE id = ?", [visit_id])
+    @db.changes > 0
+  end
+
   def delete_visits_older_than(days)
     cutoff = Time.now.to_i - (days * 24 * 60 * 60)
 

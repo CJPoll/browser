@@ -101,6 +101,16 @@ class HistoryListView
 
     hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
 
+    # Remove button
+    remove_button = Gtk::Button.new(label: "×")
+    remove_button.relief = :none
+    remove_button.signal_connect("clicked") do
+      @history_manager.delete_visit(visit['visit_id'])
+      refresh()  # Refresh after removal
+      true  # Stop event propagation to prevent row-activated signal
+    end
+    hbox.pack_start(remove_button, expand: false, fill: false, padding: 0)
+
     row.add(hbox)
 
     # Store visit data in the row
