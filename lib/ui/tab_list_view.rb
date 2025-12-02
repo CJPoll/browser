@@ -17,6 +17,20 @@ class TabListView
     # Signature: ->(tab_index) { ... }
     @on_tab_selected = nil
 
+    # Callback invoked when tab is reordered via drag-and-drop
+    # Signature: ->(from_index, to_index) { ... }
+    @on_tab_reordered = nil
+
+    # Callback invoked when tab close button is clicked
+    # Signature: ->(tab_index) { ... }
+    @on_tab_closed = nil
+
+    # Track the current drop indicator row
+    @drop_indicator_row = nil
+
+    # Set up CSS for drop indicator
+    setup_drop_indicator_css
+
     # Set up row activation handler
     @list_widget.signal_connect("row-activated") do |_list, row|
       on_tab_clicked(row)
@@ -29,6 +43,22 @@ class TabListView
   # @return [void]
   def on_tab_selected=(callback)
     @on_tab_selected = callback
+  end
+
+  # Sets callback to invoke when tab is reordered
+  #
+  # @param callback [Proc] Callback proc accepting from and to indices: ->(from_index, to_index) { ... }
+  # @return [void]
+  def on_tab_reordered=(callback)
+    @on_tab_reordered = callback
+  end
+
+  # Sets callback to invoke when tab close button is clicked
+  #
+  # @param callback [Proc] Callback proc accepting tab index: ->(index) { ... }
+  # @return [void]
+  def on_tab_closed=(callback)
+    @on_tab_closed = callback
   end
 
   # Refreshes the tab list display
@@ -54,7 +84,59 @@ class TabListView
     @list_widget.show_all
   end
 
+  # Updates the drop indicator position
+  #
+  # @param row [Gtk::ListBoxRow] The row being hovered over
+  # @param y [Integer] Y coordinate within the row
+  def update_drop_indicator(row, y)
+    return unless row
+
+    # Clear previous indicator
+    clear_drop_indicator
+
+    # Determine if we're in the top or bottom half of the row
+    row_height = row.allocation.height
+    above = y < (row_height / 2)
+
+    # Add the appropriate CSS class
+    if above
+      row.style_context.add_class("drop-indicator-above")
+    else
+      row.style_context.add_class("drop-indicator-below")
+    end
+
+    @drop_indicator_row = row
+  end
+
+  # Clears the drop indicator from any row
+  def clear_drop_indicator
+    if @drop_indicator_row
+      @drop_indicator_row.style_context.remove_class("drop-indicator-above")
+      @drop_indicator_row.style_context.remove_class("drop-indicator-below")
+      @drop_indicator_row = nil
+    end
+  end
+
   private
+
+  # Sets up CSS for the drop indicator styling
+  def setup_drop_indicator_css
+    css_provider = Gtk::CssProvider.new
+    css_data = <<-CSS
+      .drop-indicator-above {
+        border-top: 3px solid @theme_selected_bg_color;
+      }
+      .drop-indicator-below {
+        border-bottom: 3px solid @theme_selected_bg_color;
+      }
+    CSS
+    css_provider.load_from_data(css_data)
+    Gtk::StyleContext.add_provider_for_screen(
+      Gdk::Screen.default,
+      css_provider,
+      Gtk::StyleProvider::PRIORITY_APPLICATION
+    )
+  end
 
   # Creates a list box row for a tab
   #
@@ -99,12 +181,117 @@ class TabListView
 
     hbox.pack_start(vbox, expand: true, fill: true, padding: 0)
 
-    row.add(hbox)
+    # Close button
+    close_button = Gtk::Button.new(label: "×")
+    close_button.relief = :none
+    close_button.signal_connect("clicked") do
+      @on_tab_closed&.call(index)
+      true  # Stop event propagation to prevent row-activated signal
+    end
+    hbox.pack_start(close_button, expand: false, fill: false, padding: 0)
 
-    # Store the tab index in the row
+    # Wrap in EventBox to enable mouse events for drag-and-drop
+    event_box = Gtk::EventBox.new
+    event_box.add(hbox)
+    event_box.visible_window = false  # Transparent event box (no background)
+
+    row.add(event_box)
+
+    # Store the tab index in the row and event_box
     row.instance_variable_set(:@tab_index, index)
+    event_box.instance_variable_set(:@tab_index, index)
+    event_box.instance_variable_set(:@parent_row, row)
+
+    # Set up drag-and-drop for reordering on the event_box
+    setup_tab_row_drag_and_drop(event_box)
 
     row
+  end
+
+  # Sets up drag-and-drop reordering for a tab row
+  #
+  # @param widget [Gtk::EventBox] Event box wrapping the row content
+  # @return [void]
+  def setup_tab_row_drag_and_drop(widget)
+    # Create target entry for drag-and-drop using standard text target
+    # "TEXT" is a recognized text type that works with set_text/get_text
+    target_entry = Gtk::TargetEntry.new("TEXT", :same_app, 0)
+
+    # Set up as drag source
+    widget.drag_source_set(
+      Gdk::ModifierType::BUTTON1_MASK,
+      [target_entry],
+      Gdk::DragAction::MOVE
+    )
+
+    # Set up as drag destination
+    # Use MOTION but NOT DROP or HIGHLIGHT - we handle these manually
+    widget.drag_dest_set(
+      Gtk::DestDefaults::MOTION,
+      [target_entry],
+      Gdk::DragAction::MOVE
+    )
+
+    # Store reference to view for callbacks
+    view = self
+
+    # Handle drag data get (provide the data when dragging)
+    widget.signal_connect("drag-data-get") do |w, context, selection_data, info, time|
+      tab_index = w.instance_variable_get(:@tab_index)
+      if tab_index
+        # Send the tab index as plain text
+        selection_data.text = tab_index.to_s
+      end
+    end
+
+    # Handle drag motion (show drop indicator)
+    widget.signal_connect("drag-motion") do |w, context, x, y, time|
+      parent_row = w.instance_variable_get(:@parent_row)
+      view.update_drop_indicator(parent_row, y)
+      Gdk.drag_status(context, :move, time)
+      true
+    end
+
+    # Handle drag leave (clear indicator when leaving widget)
+    widget.signal_connect("drag-leave") do |w, context, time|
+      # Don't clear immediately - let drag-motion on next widget handle it
+      # This prevents flicker when moving between rows
+    end
+
+    # Handle drag drop
+    widget.signal_connect("drag-drop") do |w, context, x, y, time|
+      # Clear the drop indicator
+      view.clear_drop_indicator
+
+      # Request the drag data - this will trigger drag-data-received
+      target = Gdk::Atom.intern("TEXT", false)
+      w.drag_get_data(context, target, time)
+      true
+    end
+
+    # Handle drag data received (handle the drop)
+    widget.signal_connect("drag-data-received") do |w, context, x, y, selection_data, info, time|
+      # Get the dropped tab index
+      dropped_index_text = selection_data.text
+
+      if dropped_index_text && !dropped_index_text.empty?
+        from_index = dropped_index_text.to_i
+        to_index = w.instance_variable_get(:@tab_index)
+
+        if to_index && from_index != to_index
+          # Invoke the reorder callback
+          view.instance_variable_get(:@on_tab_reordered)&.call(from_index, to_index)
+        end
+      end
+
+      # Finish the drag operation
+      context.finish(true, false, time)
+    end
+
+    # Handle drag end (clear indicator if drag cancelled)
+    widget.signal_connect("drag-end") do |w, context|
+      view.clear_drop_indicator
+    end
   end
 
   # Handles tab row click

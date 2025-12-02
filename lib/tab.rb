@@ -21,6 +21,12 @@ class Tab
     # Enable developer tools and experimental features
     settings = @webview.settings
     settings.enable_developer_extras = true
+    settings.enable_back_forward_navigation_gestures = true
+    settings.enable_media_stream = true
+    settings.enable_webrtc = true
+
+    # Set Chrome user agent for sites that block WebKitGTK (e.g., Discord)
+    apply_user_agent_for_uri(initial_uri)
 
     # Enable experimental features for modern web compatibility
     begin
@@ -70,6 +76,7 @@ class Tab
   def setup_signals
     @webview.signal_connect("notify::uri") do
       @uri = @webview.uri
+      apply_user_agent_for_uri(@uri)
       update_list_box_row if @list_box_row
     end
 
@@ -77,6 +84,7 @@ class Tab
       @title = @webview.title || "Untitled"
       update_list_box_row if @list_box_row
     end
+
   end
 
   # Updates the sidebar list box row for this tab
@@ -85,5 +93,38 @@ class Tab
   def update_list_box_row
     # This will be called to refresh the tab's appearance in the sidebar
     # The actual implementation will be in BrowserWindow
+  end
+
+  private
+
+  # Chrome 120 on Linux user agent (Discord requires Chrome, Firefox, Edge, or Opera)
+  CHROME_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+  # Hosts that need Chrome user agent to work properly
+  CHROME_UA_HOSTS = %w[
+    discord.com
+    discordapp.com
+  ].freeze
+
+  # Applies appropriate user agent based on the URI
+  #
+  # @param uri [String, nil] The URI to check
+  def apply_user_agent_for_uri(uri)
+    return unless uri
+
+    begin
+      host = URI.parse(uri).host&.downcase
+      return unless host
+
+      settings = @webview.settings
+      if CHROME_UA_HOSTS.any? { |h| host == h || host.end_with?(".#{h}") }
+        settings.user_agent = CHROME_USER_AGENT
+      else
+        # Reset to default (nil clears custom user agent)
+        settings.user_agent = nil
+      end
+    rescue URI::InvalidURIError
+      # Invalid URI, ignore
+    end
   end
 end

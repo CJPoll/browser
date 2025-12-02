@@ -21,6 +21,7 @@ class KeyboardHandler
   #   - :zoom_actions => { zoom_in:, zoom_out:, reset: }
   #   - :mode_actions => { toggle_dark_mode:, toggle_zen_mode:, toggle_inspector: }
   #   - :window_actions => { reload_browser:, open_new_window:, open_video_popout: }
+  #   - :find_actions => { show_find_bar: }
   # @raise [ArgumentError] if required callback groups or keys are missing
   def initialize(callbacks)
     validate_callbacks(callbacks)
@@ -144,6 +145,10 @@ class KeyboardHandler
       # Ctrl+E: Show tabs in sidebar
       @callbacks[:sidebar_actions][:show_tabs].call
       true
+    when Gdk::Keyval::KEY_f
+      # Ctrl+F: Find in page
+      @callbacks[:find_actions][:show_find_bar].call
+      true
     when Gdk::Keyval::KEY_n
       # Ctrl+N: New window
       @callbacks[:window_actions][:open_new_window].call
@@ -238,7 +243,8 @@ class KeyboardHandler
       queue_actions: [:add_current, :remove_and_next, :next_item, :previous_item, :move_current_up, :move_current_down, :find_queue_entry_by_url, :show_tag_edit_dialog],
       zoom_actions: [:zoom_in, :zoom_out, :reset],
       mode_actions: [:toggle_dark_mode, :toggle_zen_mode, :toggle_inspector],
-      window_actions: [:reload_browser, :open_new_window, :open_video_popout]
+      window_actions: [:reload_browser, :open_new_window, :open_video_popout],
+      find_actions: [:show_find_bar]
     }
 
     # Check for missing groups

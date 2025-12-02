@@ -46,6 +46,12 @@ class QueueListView
     # Signature: ->(active) { ... } where active is boolean
     @on_filter_state_changed = nil
 
+    # Track the current drop indicator row
+    @drop_indicator_row = nil
+
+    # Set up CSS for drop indicator
+    setup_drop_indicator_css
+
     # Set up row activation handler
     @list_widget.signal_connect("row-activated") do |_list, row|
       on_queue_item_clicked(row)
@@ -256,7 +262,59 @@ class QueueListView
     @on_queue_modified.call(entries.length, total_count) if @on_queue_modified
   end
 
+  # Updates the drop indicator position
+  #
+  # @param row [Gtk::ListBoxRow] The row being hovered over
+  # @param y [Integer] Y coordinate within the row
+  def update_drop_indicator(row, y)
+    return unless row
+
+    # Clear previous indicator
+    clear_drop_indicator
+
+    # Determine if we're in the top or bottom half of the row
+    row_height = row.allocation.height
+    above = y < (row_height / 2)
+
+    # Add the appropriate CSS class
+    if above
+      row.style_context.add_class("drop-indicator-above")
+    else
+      row.style_context.add_class("drop-indicator-below")
+    end
+
+    @drop_indicator_row = row
+  end
+
+  # Clears the drop indicator from any row
+  def clear_drop_indicator
+    if @drop_indicator_row
+      @drop_indicator_row.style_context.remove_class("drop-indicator-above")
+      @drop_indicator_row.style_context.remove_class("drop-indicator-below")
+      @drop_indicator_row = nil
+    end
+  end
+
   private
+
+  # Sets up CSS for the drop indicator styling
+  def setup_drop_indicator_css
+    css_provider = Gtk::CssProvider.new
+    css_data = <<-CSS
+      .drop-indicator-above {
+        border-top: 3px solid @theme_selected_bg_color;
+      }
+      .drop-indicator-below {
+        border-bottom: 3px solid @theme_selected_bg_color;
+      }
+    CSS
+    css_provider.load_from_data(css_data)
+    Gtk::StyleContext.add_provider_for_screen(
+      Gdk::Screen.default,
+      css_provider,
+      Gtk::StyleProvider::PRIORITY_APPLICATION
+    )
+  end
 
   # Gets queue entries with current filters and sort applied
   #
@@ -475,10 +533,9 @@ class QueueListView
     )
 
     # Set up as drag destination
-    # Use MOTION and HIGHLIGHT but NOT DROP - we handle drop manually to avoid conflicts
-    # Including DROP would cause GTK to auto-finish drag before our handler runs
+    # Use MOTION but NOT DROP or HIGHLIGHT - we handle these manually
     widget.drag_dest_set(
-      Gtk::DestDefaults::MOTION | Gtk::DestDefaults::HIGHLIGHT,
+      Gtk::DestDefaults::MOTION,
       [target_entry],
       Gdk::DragAction::MOVE
     )
@@ -495,8 +552,25 @@ class QueueListView
       end
     end
 
+    # Handle drag motion (show drop indicator)
+    widget.signal_connect("drag-motion") do |w, context, x, y, time|
+      parent_row = w.instance_variable_get(:@parent_row)
+      view.update_drop_indicator(parent_row, y)
+      Gdk.drag_status(context, :move, time)
+      true
+    end
+
+    # Handle drag leave (clear indicator when leaving widget)
+    widget.signal_connect("drag-leave") do |w, context, time|
+      # Don't clear immediately - let drag-motion on next widget handle it
+      # This prevents flicker when moving between rows
+    end
+
     # Handle drag drop
     widget.signal_connect("drag-drop") do |w, context, x, y, time|
+      # Clear the drop indicator
+      view.clear_drop_indicator
+
       # Request the drag data - this will trigger drag-data-received
       target = Gdk::Atom.intern("TEXT", false)
       w.drag_get_data(context, target, time)
@@ -532,6 +606,11 @@ class QueueListView
 
       # Finish the drag operation
       context.finish(true, false, time)
+    end
+
+    # Handle drag end (clear indicator if drag cancelled)
+    widget.signal_connect("drag-end") do |w, context|
+      view.clear_drop_indicator
     end
   end
 

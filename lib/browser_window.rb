@@ -23,6 +23,7 @@ require 'gtk3'
 require 'webkit2-gtk'
 require 'json'
 require 'fileutils'
+require_relative 'ui/find_bar'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -67,6 +68,10 @@ class BrowserWindow < Gtk::Window
     # === Popup Notification Tracking ===
     # Track hosts with active notifications to avoid duplicates
     @popup_notification_hosts = Set.new
+
+    # === Media Permission Manager ===
+    @media_permission_manager = MediaPermissionManager.new
+    @media_permission_pending = {}  # Track pending permission requests by host
 
     # === Tab Management ===
     @tabs = []
@@ -120,6 +125,16 @@ class BrowserWindow < Gtk::Window
     @paned.wide_handle = true  # Make the resize handle more visible
     vbox.pack_start(@paned, expand: true, fill: true, padding: 0)
 
+    # Find bar (hidden by default, shown with Ctrl+F)
+    find_bar_callbacks = {
+      on_close: -> { @find_bar.hide },
+      get_current_tab: -> { current_tab }
+    }
+    @find_bar = FindBar.new(find_bar_callbacks)
+    @find_bar.widget.no_show_all = true  # Prevent show_all from showing this widget
+    @find_bar.widget.hide  # Hidden by default
+    vbox.pack_end(@find_bar.widget, expand: false, fill: false, padding: 0)
+
     # Left sidebar for tabs
     # CRITICAL INITIALIZATION ORDERING:
     # 1. Create paned widget FIRST (done above at line ~153)
@@ -137,6 +152,8 @@ class BrowserWindow < Gtk::Window
     # Create view components
     tab_list_view = TabListView.new(->(favicon_data) { create_favicon_image(favicon_data) })
     tab_list_view.on_tab_selected = ->(index) { switch_to_tab(index) }
+    tab_list_view.on_tab_reordered = ->(from_index, to_index) { move_tab(from_index, to_index) }
+    tab_list_view.on_tab_closed = ->(index) { close_tab_at_index(index) }
 
     history_list_view = HistoryListView.new(@history_manager,
                                              ->(favicon_data) { create_favicon_image(favicon_data) })
@@ -361,6 +378,9 @@ class BrowserWindow < Gtk::Window
         reload_browser: -> { reload_browser },
         open_new_window: -> { open_new_window },
         open_video_popout: -> { open_video_popout }
+      },
+      find_actions: {
+        show_find_bar: -> { @find_bar.show }
       }
     }
     @keyboard_handler = KeyboardHandler.new(keyboard_callbacks)
@@ -405,10 +425,19 @@ class BrowserWindow < Gtk::Window
   end
 
   def close_current_tab
+    close_tab_at_index(@current_tab_index)
+  end
+
+  # Closes the tab at the specified index
+  #
+  # @param index [Integer] Index of the tab to close
+  # @return [void]
+  def close_tab_at_index(index)
     return if @tabs.empty?
+    return if index < 0 || index >= @tabs.length
 
     # Get the tab to close
-    tab_to_close = @tabs[@current_tab_index]
+    tab_to_close = @tabs[index]
 
     # Stop the webview and clean up resources
     if tab_to_close
@@ -426,7 +455,7 @@ class BrowserWindow < Gtk::Window
     end
 
     # Remove the tab
-    @tabs.delete_at(@current_tab_index)
+    @tabs.delete_at(index)
 
     # If that was the last tab, create a new one
     if @tabs.empty?
@@ -435,12 +464,18 @@ class BrowserWindow < Gtk::Window
     end
 
     # Adjust current_tab_index if needed
-    if @current_tab_index >= @tabs.length
-      @current_tab_index = @tabs.length - 1
+    if index < @current_tab_index
+      # Closed a tab before current - shift index down
+      @current_tab_index -= 1
+    elsif index == @current_tab_index
+      # Closed the current tab - stay at same index or move to last
+      if @current_tab_index >= @tabs.length
+        @current_tab_index = @tabs.length - 1
+      end
+      # Switch to the new current tab
+      switch_to_tab(@current_tab_index)
     end
-
-    # Switch to the adjusted current tab
-    switch_to_tab(@current_tab_index)
+    # If closed tab after current, no adjustment needed
 
     # Refresh tabs sidebar
     @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
@@ -492,6 +527,40 @@ class BrowserWindow < Gtk::Window
 
     # Refresh tabs sidebar to show new order
     @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
+  end
+
+  # Moves a tab from one position to another (for drag-and-drop reordering)
+  #
+  # @param from_index [Integer] Source index of the tab
+  # @param to_index [Integer] Destination index
+  # @return [Boolean] True if move succeeded
+  def move_tab(from_index, to_index)
+    return false if from_index < 0 || from_index >= @tabs.length
+    return false if to_index < 0 || to_index >= @tabs.length
+    return false if from_index == to_index
+
+    # Remove the tab from its current position
+    tab = @tabs.delete_at(from_index)
+
+    # Insert at the new position
+    @tabs.insert(to_index, tab)
+
+    # Update current_tab_index to follow the current tab
+    if @current_tab_index == from_index
+      # We moved the current tab
+      @current_tab_index = to_index
+    elsif from_index < @current_tab_index && to_index >= @current_tab_index
+      # Tab moved from before current to after (or at) current
+      @current_tab_index -= 1
+    elsif from_index > @current_tab_index && to_index <= @current_tab_index
+      # Tab moved from after current to before (or at) current
+      @current_tab_index += 1
+    end
+
+    # Refresh tabs sidebar to show new order
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
+
+    true
   end
 
   def switch_to_tab(index)
@@ -656,6 +725,52 @@ class BrowserWindow < Gtk::Window
       else
         nil  # No URL, block
       end
+    end
+
+    # Handle media permission requests (camera/microphone)
+    tab.webview.signal_connect("permission-request") do |webview, request|
+      handle_media_permission_request(webview, request)
+    end
+  end
+
+  # Handles media device permission requests
+  #
+  # @param webview [WebKit2Gtk::WebView] The webview making the request
+  # @param request [WebKit2Gtk::PermissionRequest] The permission request
+  # @return [Boolean] True to stop signal propagation
+  def handle_media_permission_request(webview, request)
+    return false unless request.is_a?(WebKit2Gtk::UserMediaPermissionRequest)
+
+    uri = webview.uri
+    return false unless uri
+
+    begin
+      host = URI.parse(uri).host
+      return false unless host
+
+      # Determine permission type
+      has_audio = request.is_for_audio_device?
+      has_video = request.is_for_video_device?
+      permission_type = if has_audio && has_video
+                          :audio_video
+                        elsif has_video
+                          :video
+                        else
+                          :audio
+                        end
+
+      # Check if already whitelisted
+      if @media_permission_manager.allowed?(uri, permission_type)
+        request.allow
+        puts "Media permission auto-allowed for #{host} (#{permission_type})"
+        return true
+      end
+
+      # Show permission bar
+      show_media_permission_bar(host, permission_type, request)
+      true
+    rescue URI::InvalidURIError
+      false
     end
   end
 
@@ -1236,6 +1351,41 @@ class BrowserWindow < Gtk::Window
       }
     )
     notification_bar.set_host(host)
+
+    # Add to top of content area
+    @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(notification_bar.widget, 0)
+    notification_bar.widget.show_all
+  end
+
+  # Shows a media permission request notification bar
+  # Creates the bar dynamically and destroys it when dismissed
+  # Only one notification per host/permission is shown
+  #
+  # @param host [String] Host requesting permission
+  # @param permission_type [Symbol] :audio, :video, or :audio_video
+  # @param request [WebKit2Gtk::UserMediaPermissionRequest] The permission request
+  def show_media_permission_bar(host, permission_type, request)
+    key = "#{host}:#{permission_type}"
+
+    # Don't create duplicate notifications for the same host/permission
+    return if @media_permission_pending[key]
+    @media_permission_pending[key] = request
+
+    notification_bar = MediaPermissionBar.new(
+      on_allow: ->(allowed_host, perm_type) {
+        @media_permission_manager.allow("https://#{allowed_host}", perm_type)
+        pending_request = @media_permission_pending.delete("#{allowed_host}:#{perm_type}")
+        pending_request&.allow
+        puts "Media permission allowed for #{allowed_host} (#{perm_type})"
+      },
+      on_deny: -> {
+        pending_request = @media_permission_pending.delete(key)
+        pending_request&.deny
+        puts "Media permission denied for #{host} (#{permission_type})"
+      }
+    )
+    notification_bar.set_request(host, permission_type)
 
     # Add to top of content area
     @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
