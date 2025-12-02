@@ -11,6 +11,7 @@ class Toolbar
   #   - :on_back => -> { ... }
   #   - :on_forward => -> { ... }
   #   - :on_load_url => -> { ... }
+  #   - :on_reader_toggle => -> { ... }
   #   - :get_current_tab => -> { Tab or nil }
   #   - :in_zen_mode => -> { true/false }
   def initialize(callbacks)
@@ -37,6 +38,12 @@ class Toolbar
     forward_button = Gtk::Button.new(label: "➡")
     forward_button.signal_connect("clicked") { @callbacks[:on_forward].call }
     @widget.pack_start(forward_button, expand: false, fill: false, padding: 0)
+
+    # Reader mode button
+    @reader_button = Gtk::Button.new(label: "📖")
+    @reader_button.tooltip_text = "Reader Mode"
+    @reader_button.signal_connect("clicked") { @callbacks[:on_reader_toggle]&.call }
+    @widget.pack_start(@reader_button, expand: false, fill: false, padding: 0)
 
     # URL entry
     @url_entry = Gtk::Entry.new

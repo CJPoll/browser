@@ -24,6 +24,8 @@ require 'webkit2-gtk'
 require 'json'
 require 'fileutils'
 require_relative 'ui/find_bar'
+require_relative 'ui/reader_view'
+require_relative 'managers/article_extractor'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -91,6 +93,7 @@ class BrowserWindow < Gtk::Window
       on_back: -> { on_back },
       on_forward: -> { on_forward },
       on_load_url: -> { @navigation_handler.navigate_to(@url_entry.text) },
+      on_reader_toggle: -> { toggle_reader_mode },
       get_current_tab: -> { current_tab },  # Safe: nil during init, but callbacks only fire during user interaction
       in_zen_mode: -> { @zen_mode }
     }
@@ -260,9 +263,22 @@ class BrowserWindow < Gtk::Window
     @content_vbox = Gtk::Box.new(:vertical, 0)
     @paned.pack2(@content_vbox, resize: true, shrink: false)
 
+    # Overlay for layering reader view on top of webview
+    @content_overlay = Gtk::Overlay.new
+    @content_vbox.pack_start(@content_overlay, expand: true, fill: true, padding: 0)
+
     # Scrolled window for webview (will swap webviews when switching tabs)
     @webview_container = Gtk::ScrolledWindow.new
-    @content_vbox.pack_start(@webview_container, expand: true, fill: true, padding: 0)
+    @content_overlay.add(@webview_container)
+
+    # Reader view (overlay on top of webview)
+    @article_extractor = ArticleExtractor.new
+    reader_callbacks = {
+      on_close: -> { @reader_view_active = false }
+    }
+    @reader_view = ReaderView.new(reader_callbacks)
+    @reader_view_active = false
+    @content_overlay.add_overlay(@reader_view.widget)
 
     # Only restore session if no URL was passed as argument
     if ORIGINAL_ARGV.empty?
@@ -1150,6 +1166,46 @@ class BrowserWindow < Gtk::Window
       inspector.close
     else
       inspector.show
+    end
+  end
+
+  def toggle_reader_mode
+    puts "DEBUG: toggle_reader_mode called, active=#{@reader_view_active}"
+
+    if @reader_view_active
+      @reader_view.hide
+      @reader_view_active = false
+      return
+    end
+
+    return puts "DEBUG: No current tab" unless current_tab
+
+    # Get the page HTML using WebKit's main_resource
+    resource = current_tab.webview.main_resource
+    return puts "DEBUG: No main_resource" unless resource
+
+    puts "DEBUG: Fetching page data..."
+    resource.get_data(nil) do |res, result|
+      begin
+        data = res.get_data_finish(result)
+        puts "DEBUG: Got data: #{data ? data.length : 'nil'} bytes"
+        if data
+          # Data is returned as an array of bytes, convert to string
+          html = data.pack('C*').force_encoding('UTF-8')
+          article = @article_extractor.extract(html)
+          puts "DEBUG: Extracted title=#{article[:title]}, content length=#{article[:content]&.length}"
+
+          if article[:content]
+            @reader_view.show(article[:title], article[:content])
+            @reader_view_active = true
+          else
+            puts "Could not extract article content"
+          end
+        end
+      rescue => e
+        puts "Error extracting article: #{e.message}"
+        puts e.backtrace.first(5).join("\n")
+      end
     end
   end
 
