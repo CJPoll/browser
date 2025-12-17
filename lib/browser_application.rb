@@ -7,16 +7,13 @@ class BrowserApplication < Gtk::Application
   IPC_URL_FILE = File.join(IPC_DIR, 'pending-url')
 
   # Creates a new browser application
-  # Captures command-line arguments before GTK consumes them
-  #
-  # @param original_argv [Array<String>] Command-line arguments (ARGV.dup)
-  def initialize(original_argv)
+  def initialize
     super("com.example.browser", Gio::ApplicationFlags::HANDLES_OPEN | Gio::ApplicationFlags::HANDLES_COMMAND_LINE)
 
-    @original_argv = original_argv
     @main_window = nil
     @windows = []  # Track all windows for cleanup
-    @last_ipc_check = Time.now.to_f
+    # Set to 0 so we process any IPC file written before app started
+    @last_ipc_check = 0
 
     # Set up signal handlers
     setup_signals
@@ -42,11 +39,65 @@ class BrowserApplication < Gtk::Application
       @main_window = create_window
       @main_window.show_all
 
-      # Set up IPC file monitoring for URLs from other instances
+      # Set up IPC file monitoring for URLs from this and other instances
       setup_ipc_monitoring
     else
       # Window already exists - just present it
       @main_window.present
+    end
+  end
+
+  # Sets up IPC file monitoring timer
+  # Checks every 100ms for URLs written by this or other instances
+  #
+  # @return [void]
+  def setup_ipc_monitoring
+    GLib::Timeout.add(100) do
+      process_ipc_file
+      true  # Continue timer
+    end
+  end
+
+  # Process the IPC file if it exists and is newer than last check
+  #
+  # @return [void]
+  def process_ipc_file
+    return unless File.exist?(IPC_URL_FILE)
+
+    begin
+      content = File.read(IPC_URL_FILE)
+      parts = content.split("\n")
+      url = parts[0]
+      timestamp = parts[1].to_f
+      new_window = parts[2] == "true"
+
+      # Only process if this is a new request (timestamp after last check)
+      return unless timestamp > @last_ipc_check
+
+      if new_window
+        # Create a new window
+        window = create_window(url.empty? ? nil : url)
+        window.show_all
+        window.present
+      elsif url && !url.empty?
+        # Open URL in existing window
+        tabs = @main_window.instance_variable_get(:@tabs)
+        first_tab_uri = tabs.first&.uri
+
+        # If first tab is example.com (default), navigate it instead of creating new tab
+        if first_tab_uri == "https://www.example.com/" || first_tab_uri == "https://www.example.com"
+          tabs.first.webview.load_uri(url)
+        else
+          @main_window.create_new_tab(url)
+        end
+        @main_window.present
+      end
+
+      @last_ipc_check = timestamp
+      # Delete the file after processing
+      File.delete(IPC_URL_FILE)
+    rescue => e
+      warn "Error reading IPC file: #{e.message}"
     end
   end
 
@@ -75,47 +126,8 @@ class BrowserApplication < Gtk::Application
     window
   end
 
-  # Sets up IPC file monitoring timer
-  # Checks every 500ms for URLs written by second instances
-  #
-  # @return [void]
-  def setup_ipc_monitoring
-    GLib::Timeout.add(500) do
-      if File.exist?(IPC_URL_FILE)
-        begin
-          content = File.read(IPC_URL_FILE)
-          parts = content.split("\n")
-          url = parts[0]
-          timestamp = parts[1].to_f
-          new_window = parts[2] == "true"
-
-          # Only process if this is a new request (timestamp after last check)
-          if timestamp > @last_ipc_check
-            if new_window
-              # Create a new window
-              window = create_window(url)
-              window.show_all
-              window.present
-            else
-              # Open in existing window as new tab
-              if url && !url.empty?
-                @main_window.create_new_tab(url)
-              end
-              @main_window.present
-            end
-            @last_ipc_check = timestamp
-            # Delete the file after processing
-            File.delete(IPC_URL_FILE)
-          end
-        rescue => e
-          warn "Error reading IPC file: #{e.message}"
-        end
-      end
-      true  # Continue timer
-    end
-  end
-
   # Handles command-line invocation
+  # URLs are passed via IPC file since GTK Ruby bindings don't expose command_line.arguments properly
   #
   # @param application [Gtk::Application] Application instance
   # @param command_line [Gio::ApplicationCommandLine] Command line object
@@ -124,27 +136,8 @@ class BrowserApplication < Gtk::Application
     # Get or create the main window
     application.activate if @main_window.nil?
 
-    # Check if a URL was passed in original_argv
-    if @original_argv.length > 0 && !@original_argv[0].to_s.empty?
-      url = @original_argv[0]
-      begin
-        tabs = @main_window.instance_variable_get(:@tabs)
-        first_tab_uri = tabs.first&.uri
-
-        # If the first tab is about:blank, navigate it to the URL instead of creating a new tab
-        if first_tab_uri == "about:blank"
-          tabs.first.webview.load_uri(url)
-        else
-          # Otherwise create a new tab
-          @main_window.create_new_tab(url)
-        end
-
-        # Clear original_argv so we don't re-open it on next signal
-        @original_argv.clear
-      rescue => e
-        warn "Error loading URL: #{e.message}"
-      end
-    end
+    # Process any pending IPC file immediately (don't wait for timer)
+    process_ipc_file
 
     # Bring window to front
     @main_window.present if @main_window

@@ -12,10 +12,12 @@ class Sidebar
   #   - :tab_list_view => TabListView instance
   #   - :history_list_view => HistoryListView instance
   #   - :queue_list_view => QueueListView instance
+  #   - :download_list_view => DownloadListView instance
   # @param callbacks [Hash] Hash of callback procs:
   #   - :get_tabs => -> { [@tabs, @current_tab_index] }
   #   - :get_current_tab => -> { Tab or nil }
   #   - :get_queue_count => -> { Integer }
+  #   - :get_download_count => -> { Integer }
   #   - :get_paned => -> { Gtk::Paned widget }
   # @param initial_width [Integer] Initial sidebar width in pixels
   def initialize(view_components, callbacks, initial_width: 300)
@@ -23,7 +25,7 @@ class Sidebar
     @callbacks = callbacks
     @width = initial_width
     @visible = true
-    @mode = :tabs  # Can be :tabs, :history, or :queue
+    @mode = :tabs  # Can be :tabs, :history, :queue, or :downloads
 
     # Expose queue_list_widget for move operations
     @queue_list_widget = @view_components[:queue_list_view].list_widget
@@ -109,6 +111,9 @@ class Sidebar
     # Track if filter controls are currently in the widget tree
     @filter_controls_added = false
 
+    # Track if history search bar is currently in the widget tree
+    @history_search_added = false
+
     # Scrolled window for list
     scrolled = Gtk::ScrolledWindow.new
     scrolled.set_policy(:never, :automatic)
@@ -157,6 +162,7 @@ class Sidebar
 
     # Update filter button visibility AFTER show_all (show_all overrides visibility)
     update_filter_button_visibility
+    update_history_search_visibility
 
     # Refresh tabs
     tabs, current_tab_index = @callbacks[:get_tabs].call
@@ -187,8 +193,9 @@ class Sidebar
                         expand: true, fill: true, padding: 0)
     @content.show_all
 
-    # Update filter button visibility AFTER show_all (show_all overrides visibility)
+    # Update filter button and search bar visibility AFTER show_all
     update_filter_button_visibility
+    update_history_search_visibility
 
     # Refresh history
     @view_components[:history_list_view].refresh(50)
@@ -219,13 +226,47 @@ class Sidebar
                         expand: true, fill: true, padding: 0)
     @content.show_all
 
-    # Update filter button visibility AFTER show_all (show_all overrides visibility)
+    # Update filter button and search bar visibility AFTER show_all
     update_filter_button_visibility
+    update_history_search_visibility
 
     # Refresh queue
     current_tab = @callbacks[:get_current_tab].call
     current_url = current_tab&.webview&.uri
     @view_components[:queue_list_view].refresh(current_url)
+  end
+
+  # Shows downloads view in sidebar
+  #
+  # @return [void]
+  def show_downloads
+    # If already showing downloads sidebar, toggle it off
+    if @visible && @mode == :downloads
+      hide_sidebar
+      return
+    end
+
+    # Show sidebar if it's hidden
+    show_sidebar if !@visible
+
+    @mode = :downloads
+    download_count = @callbacks[:get_download_count]&.call || 0
+    @header.markup = "<b>Downloads (#{download_count})</b>"
+
+    # Clear sidebar content
+    @content.children.each { |child| @content.remove(child) }
+
+    # Add downloads list
+    @content.pack_start(@view_components[:download_list_view].list_widget,
+                        expand: true, fill: true, padding: 0)
+    @content.show_all
+
+    # Update filter button and search bar visibility AFTER show_all
+    update_filter_button_visibility
+    update_history_search_visibility
+
+    # Refresh downloads
+    @view_components[:download_list_view].refresh
   end
 
   # Refreshes the currently active view
@@ -242,6 +283,8 @@ class Sidebar
       current_tab = @callbacks[:get_current_tab].call
       current_url = current_tab&.webview&.uri
       @view_components[:queue_list_view].refresh(current_url)
+    when :downloads
+      @view_components[:download_list_view].refresh
     end
   end
 
@@ -342,6 +385,24 @@ class Sidebar
   # Delegate to queue_list_view which owns filter state
   def show_filter_popover
     @view_components[:queue_list_view].show_filter_popover(@filter_button)
+  end
+
+  # Updates history search bar visibility based on current mode
+  def update_history_search_visibility
+    should_show = (@mode == :history)
+
+    if should_show && !@history_search_added
+      # Add search entry after header_box
+      @widget.pack_start(@view_components[:history_list_view].search_entry, expand: false, fill: false, padding: 8)
+      @widget.reorder_child(@view_components[:history_list_view].search_entry, 1)
+      @view_components[:history_list_view].search_entry.show_all
+      @history_search_added = true
+    elsif !should_show && @history_search_added
+      # Clear search text and remove search entry
+      @view_components[:history_list_view].search_entry.text = ""
+      @widget.remove(@view_components[:history_list_view].search_entry)
+      @history_search_added = false
+    end
   end
 
   # Creates a removable filter pill for the filter bar

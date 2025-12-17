@@ -8,20 +8,20 @@ require 'fileutils'
 ORIGINAL_ARGV = ARGV.dup
 
 # Parse --new-window flag
-new_window = ORIGINAL_ARGV.delete('--new-window') ? true : false
+NEW_WINDOW_FLAG = ORIGINAL_ARGV.delete('--new-window') ? true : false
 
 # IPC file for passing URLs between instances
 IPC_DIR = File.join(Dir.home, '.local/share/toy-browser')
 FileUtils.mkdir_p(IPC_DIR)
 IPC_URL_FILE = File.join(IPC_DIR, 'pending-url')
 
-# If we have a URL argument, write it to the IPC file
-# Format: url\ntimestamp\nnew_window
+# Write URL to IPC file for the primary instance to pick up
+# This works for both first launch and subsequent launches
 if ORIGINAL_ARGV.length > 0 && !ORIGINAL_ARGV[0].empty?
-  File.write(IPC_URL_FILE, "#{ORIGINAL_ARGV[0]}\n#{Time.now.to_f}\n#{new_window}")
-elsif new_window
+  File.write(IPC_URL_FILE, "#{ORIGINAL_ARGV[0]}\n#{Time.now.to_f}\n#{NEW_WINDOW_FLAG}")
+elsif NEW_WINDOW_FLAG
   # --new-window without URL - open blank window
-  File.write(IPC_URL_FILE, "\n#{Time.now.to_f}\n#{new_window}")
+  File.write(IPC_URL_FILE, "\n#{Time.now.to_f}\n#{NEW_WINDOW_FLAG}")
 end
 
 require 'gtk3'
@@ -32,6 +32,7 @@ require 'net/http'
 require 'uri'
 require_relative 'history_manager'
 require_relative 'queue_manager'
+require_relative 'download_manager'
 require_relative 'video_popout_window'
 require_relative 'lib/managers/web_context_manager'
 require_relative 'lib/managers/settings_manager'
@@ -58,5 +59,5 @@ require_relative 'lib/browser_application'
 
 
 # Main application entry point
-app = BrowserApplication.new(ORIGINAL_ARGV)
+app = BrowserApplication.new
 app.run

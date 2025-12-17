@@ -12,8 +12,10 @@ class Toolbar
   #   - :on_forward => -> { ... }
   #   - :on_load_url => -> { ... }
   #   - :on_reader_toggle => -> { ... }
+  #   - :on_downloads_toggle => -> { ... }
   #   - :get_current_tab => -> { Tab or nil }
   #   - :in_zen_mode => -> { true/false }
+  #   - :get_download_state => -> { :none, :active, :paused, :failed }
   def initialize(callbacks)
     @callbacks = callbacks
 
@@ -44,6 +46,12 @@ class Toolbar
     @reader_button.tooltip_text = "Reader Mode"
     @reader_button.signal_connect("clicked") { @callbacks[:on_reader_toggle]&.call }
     @widget.pack_start(@reader_button, expand: false, fill: false, padding: 0)
+
+    # Downloads button
+    @downloads_button = Gtk::Button.new(label: "⬇")
+    @downloads_button.tooltip_text = "Downloads"
+    @downloads_button.signal_connect("clicked") { @callbacks[:on_downloads_toggle]&.call }
+    @widget.pack_start(@downloads_button, expand: false, fill: false, padding: 0)
 
     # URL entry
     @url_entry = Gtk::Entry.new
@@ -96,5 +104,22 @@ class Toolbar
   # @param url [String] The URL to display
   def update_url(url)
     @url_entry.text = url if url
+  end
+
+  # Updates the download button badge/state
+  #
+  # @param state [Symbol] Download state (:none, :active, :paused, :failed)
+  # @param count [Integer] Number of active downloads (optional)
+  def update_download_badge(state, count = 0)
+    case state
+    when :active
+      @downloads_button.label = count > 0 ? "⬇ #{count}" : "⬇"
+    when :paused
+      @downloads_button.label = "⏸"
+    when :failed
+      @downloads_button.label = "⬇ !"
+    else
+      @downloads_button.label = "⬇"
+    end
   end
 end

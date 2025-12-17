@@ -25,7 +25,12 @@ require 'json'
 require 'fileutils'
 require_relative 'ui/find_bar'
 require_relative 'ui/reader_view'
-require_relative 'managers/article_extractor'
+require_relative 'ui/download_list_view'
+require_relative 'ui/download_notification_bar'
+require_relative 'ui/certificate_exception_bar'
+require_relative 'ui/site_permissions_window'
+require_relative 'managers/article_extractor_js'
+require_relative 'managers/certificate_exception_manager'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -41,6 +46,7 @@ class BrowserWindow < Gtk::Window
     # === Core Managers ===
     @history_manager = HistoryManager.new
     @queue_manager = QueueManager.new
+    @download_manager = DownloadManager.new
     @popup_manager = PopupManager.new
     @settings_manager = SettingsManager.new(data_dir: @data_dir)
     @session_manager = SessionManager.new(data_dir: @data_dir)
@@ -75,6 +81,10 @@ class BrowserWindow < Gtk::Window
     @media_permission_manager = MediaPermissionManager.new
     @media_permission_pending = {}  # Track pending permission requests by host
 
+    # === Certificate Exception Manager ===
+    @certificate_exception_manager = CertificateExceptionManager.new
+    @certificate_exception_pending = Set.new  # Track hosts with active certificate notifications
+
     # === Tab Management ===
     @tabs = []
     @current_tab_index = 0
@@ -82,6 +92,11 @@ class BrowserWindow < Gtk::Window
     # === WebKit Context ===
     # Create web context first (needed for tabs)
     @web_context = WebContextManager.create(data_dir: @data_dir)
+
+    # Handle downloads from web context
+    @web_context.signal_connect("download-started") do |_context, download|
+      handle_download(download)
+    end
 
     # Create layout
     vbox = ::Gtk::Box.new(:vertical, 0)
@@ -94,8 +109,10 @@ class BrowserWindow < Gtk::Window
       on_forward: -> { on_forward },
       on_load_url: -> { @navigation_handler.navigate_to(@url_entry.text) },
       on_reader_toggle: -> { toggle_reader_mode },
+      on_downloads_toggle: -> { show_downloads_sidebar },
       get_current_tab: -> { current_tab },  # Safe: nil during init, but callbacks only fire during user interaction
-      in_zen_mode: -> { @zen_mode }
+      in_zen_mode: -> { @zen_mode },
+      get_download_state: -> { get_download_state }
     }
     @toolbar_component = Toolbar.new(toolbar_callbacks)
     @toolbar = @toolbar_component.widget
@@ -174,15 +191,26 @@ class BrowserWindow < Gtk::Window
       show_queue_entry_context_menu(entry, event)
     }
 
+    download_list_view = DownloadListView.new(@download_manager)
+    download_list_view.on_open_location = ->(filepath) {
+      # Open file manager at the download location
+      system("xdg-open", File.dirname(filepath))
+    }
+    download_list_view.on_retry = ->(url, filename) {
+      # Retry download - navigate to URL which will trigger download again
+      current_tab.webview.load_uri(url) if current_tab
+    }
+
     # Create sidebar component
     sidebar_callbacks = {
       get_tabs: -> { [@tabs, @current_tab_index] },
       get_current_tab: -> { current_tab },
       get_queue_count: -> { @queue_manager.count },
+      get_download_count: -> { @download_manager.all.length },
       get_paned: -> { @paned }
     }
     @sidebar_component = Sidebar.new(
-      { tab_list_view: tab_list_view, history_list_view: history_list_view, queue_list_view: queue_list_view },
+      { tab_list_view: tab_list_view, history_list_view: history_list_view, queue_list_view: queue_list_view, download_list_view: download_list_view },
       sidebar_callbacks,
       initial_width: (1200 * @sidebar_width_ratio).to_i
     )
@@ -272,7 +300,6 @@ class BrowserWindow < Gtk::Window
     @content_overlay.add(@webview_container)
 
     # Reader view (overlay on top of webview)
-    @article_extractor = ArticleExtractor.new
     reader_callbacks = {
       on_close: -> { @reader_view_active = false }
     }
@@ -280,27 +307,22 @@ class BrowserWindow < Gtk::Window
     @reader_view_active = false
     @content_overlay.add_overlay(@reader_view.widget)
 
-    # Only restore session if no URL was passed as argument
-    if ORIGINAL_ARGV.empty?
-      # Restore session if available, otherwise create initial tab
-      session = @session_manager.load_session
-      if session && session['tabs'] && !session['tabs'].empty?
-        # Restore tabs from session
-        session['tabs'].each do |tab_url|
-          create_new_tab(tab_url)
-        end
+    # Restore session if available, otherwise create initial tab
+    # Command-line URLs are handled by BrowserApplication after window creation
+    session = @session_manager.load_session
+    if session && session['tabs'] && !session['tabs'].empty?
+      # Restore tabs from session
+      session['tabs'].each do |tab_url|
+        create_new_tab(tab_url)
+      end
 
-        # Restore current tab index
-        if session['current_tab_index'] && session['current_tab_index'] < @tabs.length
-          switch_to_tab(session['current_tab_index'])
-        end
-      else
-        # Create initial tab
-        create_new_tab("https://www.example.com")
+      # Restore current tab index
+      if session['current_tab_index'] && session['current_tab_index'] < @tabs.length
+        switch_to_tab(session['current_tab_index'])
       end
     else
-      # URL will be opened by command-line handler, just create a placeholder
-      create_new_tab("about:blank")
+      # Create initial tab
+      create_new_tab("https://www.example.com")
     end
 
     # Test mode: Write state for automated testing
@@ -322,8 +344,9 @@ class BrowserWindow < Gtk::Window
 
     # Cleanup on window destroy
     signal_connect("destroy") do
-      # Stop the background worker
+      # Stop the background workers
       @queue_metadata_worker.stop
+      @download_manager.stop
 
       # Save session and settings
       save_current_session
@@ -345,6 +368,7 @@ class BrowserWindow < Gtk::Window
         show_tabs: -> { show_tabs_sidebar },
         show_history: -> { show_history_sidebar },
         show_queue: -> { show_queue_sidebar },
+        show_downloads: -> { show_downloads_sidebar },
         visible: -> { @sidebar_component.visible },
         mode: -> { @sidebar_component.mode }
       },
@@ -393,7 +417,9 @@ class BrowserWindow < Gtk::Window
       window_actions: {
         reload_browser: -> { reload_browser },
         open_new_window: -> { open_new_window },
-        open_video_popout: -> { open_video_popout }
+        open_video_popout: -> { open_video_popout },
+        open_site_permissions: -> { open_site_permissions },
+        open_file: -> { open_file }
       },
       find_actions: {
         show_find_bar: -> { @find_bar.show }
@@ -629,6 +655,26 @@ class BrowserWindow < Gtk::Window
       on_load_changed(load_event)
     end
 
+    # Handle TLS certificate errors (self-signed certs, etc.)
+    tab.webview.signal_connect("load-failed-with-tls-errors") do |_webview, failing_uri, certificate, errors|
+      uri = URI.parse(failing_uri) rescue nil
+      host = uri&.host
+
+      if host
+        # Check if we already have an exception for this host
+        if @certificate_exception_manager.allowed?(host)
+          # Allow the certificate and reload
+          @web_context.allow_tls_certificate_for_host(certificate, host)
+          tab.webview.load_uri(failing_uri)
+        else
+          # Show the exception bar
+          show_certificate_exception_bar(host, failing_uri, certificate, tab)
+        end
+      end
+
+      true  # We handled it, don't emit load-failed
+    end
+
     # Handle mouse button events on the WebView
     tab.webview.signal_connect("button-press-event") do |_webview, event|
       next false unless current_tab == tab
@@ -640,7 +686,7 @@ class BrowserWindow < Gtk::Window
       @mouse_handler.handle_decide_policy(tab.webview, decision, decision_type, tab)
     end
 
-    # Handle context menu to add custom options for links
+    # Handle context menu to add custom options for links and pages
     tab.webview.signal_connect("context-menu") do |_webview, context_menu, event, hit_test_result|
       # Check if we right-clicked on a link
       if hit_test_result.link_uri
@@ -697,6 +743,51 @@ class BrowserWindow < Gtk::Window
         # Add separator after our custom items and "Open Link in New Window"
         separator = WebKit2Gtk::ContextMenuItem.new()
         context_menu.insert(separator, 3)  # Position 3 (after Add to Queue, Open in New Tab, Open in New Window)
+      else
+        # Right-clicked on page (not a link) - add queue option for current page
+        page_uri = tab.webview.uri
+        if page_uri && !page_uri.empty? && page_uri != "about:blank"
+          # Check if current page is already in queue
+          existing_entry = @queue_manager.find_by_url_fuzzy(page_uri)
+
+          if existing_entry
+            # Page is in queue - show "Remove from Queue"
+            remove_action = Gio::SimpleAction.new("remove-page-from-queue-#{page_uri.hash.abs}", nil)
+            remove_action.signal_connect("activate") do
+              @queue_manager.remove_by_url(page_uri)
+              puts "Removed from queue: #{page_uri}"
+              @sidebar_component.refresh_current_view if @sidebar_component.mode == :queue
+            end
+
+            remove_item = WebKit2Gtk::ContextMenuItem.new(remove_action, "Remove from Queue", nil)
+            context_menu.prepend(remove_item)
+          else
+            # Page is not in queue - show "Add to Queue"
+            add_action = Gio::SimpleAction.new("add-page-to-queue-#{page_uri.hash.abs}", nil)
+            add_action.signal_connect("activate") do
+              page_title = tab.webview.title
+              page_favicon = tab.favicon_data
+
+              result = @queue_manager.add(page_uri, page_title, page_favicon)
+              case result
+              when :added
+                puts "Added to queue: #{page_uri}"
+                @sidebar_component.refresh_current_view if @sidebar_component.mode == :queue
+              when :already_exists
+                puts "Already in queue: #{page_uri}"
+              when :invalid_url
+                warn "Cannot add invalid URL to queue"
+              end
+            end
+
+            add_item = WebKit2Gtk::ContextMenuItem.new(add_action, "Add to Queue", nil)
+            context_menu.prepend(add_item)
+          end
+
+          # Add separator after our custom item
+          separator = WebKit2Gtk::ContextMenuItem.new()
+          context_menu.insert(separator, 1)
+        end
       end
 
       false  # Let the default menu show
@@ -854,6 +945,10 @@ class BrowserWindow < Gtk::Window
 
   def show_queue_sidebar
     @sidebar_component.show_queue
+  end
+
+  def show_downloads_sidebar
+    @sidebar_component.show_downloads
   end
 
   # ========================================
@@ -1170,33 +1265,48 @@ class BrowserWindow < Gtk::Window
   end
 
   def toggle_reader_mode
-    puts "DEBUG: toggle_reader_mode called, active=#{@reader_view_active}"
-
     if @reader_view_active
       @reader_view.hide
       @reader_view_active = false
       return
     end
 
-    return puts "DEBUG: No current tab" unless current_tab
+    return unless current_tab
 
-    # Get the page HTML using WebKit's main_resource
-    resource = current_tab.webview.main_resource
-    return puts "DEBUG: No main_resource" unless resource
+    # Use JavaScript to extract article content directly in WebKit
+    # This avoids GC conflicts between Nokogiri/libxml2 and GLib/librsvg
+    script = ArticleExtractorJS.extraction_script
 
-    puts "DEBUG: Fetching page data..."
-    resource.get_data(nil) do |res, result|
+    webview = current_tab.webview
+    webview.run_javascript(script, nil) do |source_object, async_result|
       begin
-        data = res.get_data_finish(result)
-        puts "DEBUG: Got data: #{data ? data.length : 'nil'} bytes"
-        if data
-          # Data is returned as an array of bytes, convert to string
-          html = data.pack('C*').force_encoding('UTF-8')
-          article = @article_extractor.extract(html)
-          puts "DEBUG: Extracted title=#{article[:title]}, content length=#{article[:content]&.length}"
+        js_result = source_object.run_javascript_finish(async_result)
+        if js_result
+          js_value = js_result.js_value
 
-          if article[:content]
-            @reader_view.show(article[:title], article[:content])
+          # The JSCValue class doesn't expose to_string directly in Ruby bindings
+          # We need to invoke the method via GObject introspection
+          require 'gobject-introspection'
+          repo = GObjectIntrospection::Repository.default
+
+          # JavaScriptCore 4.1 is already loaded by webkit2-gtk
+          begin
+            repo.require('JavaScriptCore', '4.1')
+          rescue GObjectIntrospection::RepositoryError
+            # Already loaded, that's fine
+          end
+
+          value_info = repo.find('JavaScriptCore', 'Value')
+
+          # Find to_string method and invoke it with receiver and empty args
+          to_string_method = nil
+          value_info.methods.each { |m| to_string_method = m if m.name == 'to_string' }
+
+          json_str = to_string_method.invoke(js_value, [])
+          article = JSON.parse(json_str)
+
+          if article['content'] && !article['content'].empty?
+            @reader_view.show(article['title'], article['content'])
             @reader_view_active = true
           else
             puts "Could not extract article content"
@@ -1269,6 +1379,72 @@ class BrowserWindow < Gtk::Window
     end
   end
 
+  def open_site_permissions
+    permissions_window = SitePermissionsWindow.new(@popup_manager, @media_permission_manager, @certificate_exception_manager, self)
+    permissions_window.set_application(self.application) if self.application
+    permissions_window.show_all
+  end
+
+  def open_file
+    # Create file chooser dialog
+    dialog = Gtk::FileChooserDialog.new(
+      title: "Open File",
+      parent: self,
+      action: :open,
+      buttons: [
+        ["Cancel", :cancel],
+        ["Open", :accept]
+      ]
+    )
+
+    # Add file filters
+    # All files
+    filter_all = Gtk::FileFilter.new
+    filter_all.name = "All Files"
+    filter_all.add_pattern("*")
+    dialog.add_filter(filter_all)
+
+    # HTML files
+    filter_html = Gtk::FileFilter.new
+    filter_html.name = "HTML Files"
+    filter_html.add_mime_type("text/html")
+    filter_html.add_pattern("*.html")
+    filter_html.add_pattern("*.htm")
+    dialog.add_filter(filter_html)
+
+    # PDF files
+    filter_pdf = Gtk::FileFilter.new
+    filter_pdf.name = "PDF Files"
+    filter_pdf.add_mime_type("application/pdf")
+    filter_pdf.add_pattern("*.pdf")
+    dialog.add_filter(filter_pdf)
+
+    # Image files
+    filter_images = Gtk::FileFilter.new
+    filter_images.name = "Images"
+    filter_images.add_mime_type("image/*")
+    dialog.add_filter(filter_images)
+
+    # Run dialog
+    if dialog.run == Gtk::ResponseType::ACCEPT
+      filepath = dialog.filename
+      if filepath
+        # Open file in current tab or new tab
+        file_uri = "file://#{filepath}"
+        if current_tab && current_tab.uri == "about:blank"
+          # Current tab is blank, use it
+          current_tab.webview.load_uri(file_uri)
+        else
+          # Open in new tab
+          create_new_tab(file_uri)
+        end
+        puts "Opening file: #{filepath}"
+      end
+    end
+
+    dialog.destroy
+  end
+
   # ========================================
   # Browser Lifecycle
   # ========================================
@@ -1292,6 +1468,138 @@ class BrowserWindow < Gtk::Window
     # Collect all tab URLs
     tab_urls = @tabs.map { |tab| tab.uri || "https://www.google.com" }
     @session_manager.save_session(tab_urls, @current_tab_index)
+  end
+
+  # ========================================
+  # Download Management
+  # ========================================
+
+  # Handles a download request from WebKit
+  #
+  # @param download [WebKit2Gtk::Download] The download object
+  def handle_download(download)
+    # Get download info
+    request = download.request
+    url = request.uri
+    response = download.response
+    suggested_filename = response&.suggested_filename || File.basename(URI.parse(url).path)
+
+    # Add to download manager
+    download_id = @download_manager.add(url, suggested_filename, nil)
+
+    # Set download destination
+    destination_path = File.join(@download_manager.download_dir, suggested_filename)
+    download.destination = "file://#{destination_path}"
+
+    # Register download object for pause/cancel operations
+    download_list_view = @sidebar_component.instance_variable_get(:@view_components)[:download_list_view]
+    download_list_view.register_download(download_id, download)
+
+    # Track last UI update time for throttling (max once per 2 seconds)
+    @download_ui_updates ||= {}
+    @download_ui_updates[download_id] = Time.at(0)
+
+    # Track progress
+    download.signal_connect("received-data") do |dl, data_length|
+      @download_manager.update_progress(download_id, dl.received_data_length, DownloadManager::STATES[:active])
+
+      # Throttle UI updates to once every 2 seconds
+      now = Time.now
+      if now - @download_ui_updates[download_id] >= 2.0
+        @download_ui_updates[download_id] = now
+
+        # Update UI
+        if @sidebar_component.mode == :downloads
+          total_size = dl.response&.content_length || 0
+          speed = calculate_download_speed(download_id, dl.received_data_length)
+          download_list_view.update_progress(download_id, dl.received_data_length, total_size, speed)
+        end
+
+        # Update toolbar badge
+        update_download_badge
+      end
+    end
+
+    # Handle completion
+    download.signal_connect("finished") do
+      @download_manager.update_state(download_id, DownloadManager::STATES[:completed])
+      download_list_view.unregister_download(download_id)
+
+      # Refresh UI
+      @sidebar_component.refresh_current_view if @sidebar_component.mode == :downloads
+      update_download_badge
+
+      # Show completion notification
+      show_download_complete_notification(suggested_filename, destination_path)
+
+      puts "Download completed: #{suggested_filename}"
+    end
+
+    # Handle failure
+    download.signal_connect("failed") do |_dl, error|
+      @download_manager.mark_failed(download_id, error.message)
+      download_list_view.unregister_download(download_id)
+
+      # Refresh UI
+      @sidebar_component.refresh_current_view if @sidebar_component.mode == :downloads
+      update_download_badge
+
+      puts "Download failed: #{error.message}"
+    end
+
+    puts "Download started: #{suggested_filename}"
+
+    # Refresh downloads sidebar if visible
+    @sidebar_component.refresh_current_view if @sidebar_component.mode == :downloads
+    update_download_badge
+  end
+
+  # Calculates download speed in bytes/sec
+  #
+  # @param download_id [Integer] Download ID
+  # @param current_bytes [Integer] Current bytes downloaded
+  # @return [Float] Speed in bytes/sec
+  def calculate_download_speed(download_id, current_bytes)
+    @download_speed_tracker ||= {}
+
+    now = Time.now
+    if @download_speed_tracker[download_id]
+      prev_time, prev_bytes = @download_speed_tracker[download_id]
+      time_diff = now - prev_time
+      bytes_diff = current_bytes - prev_bytes
+
+      speed = time_diff > 0 ? bytes_diff / time_diff : 0.0
+    else
+      speed = 0.0
+    end
+
+    @download_speed_tracker[download_id] = [now, current_bytes]
+    speed
+  end
+
+  # Gets the current download state for toolbar badge
+  #
+  # @return [Symbol] :none, :active, :paused, or :failed
+  def get_download_state
+    active = @download_manager.active
+
+    return :none if active.empty?
+
+    # Check for failed downloads
+    return :failed if active.any? { |d| d['state'] == DownloadManager::STATES[:failed] }
+
+    # Check for paused downloads
+    return :paused if active.any? { |d| d['state'] == DownloadManager::STATES[:paused] }
+
+    # Active downloads
+    :active
+  end
+
+  # Updates the toolbar download button badge
+  def update_download_badge
+    state = get_download_state
+    count = @download_manager.active.length
+    @toolbar_component.update_download_badge(state, count)
   end
 
   # ========================================
@@ -1480,6 +1788,72 @@ class BrowserWindow < Gtk::Window
     rescue URI::InvalidURIError
       false
     end
+  end
+
+  # Shows a download completion notification bar
+  #
+  # @param filename [String] Downloaded filename
+  # @param filepath [String] Full path to downloaded file
+  def show_download_complete_notification(filename, filepath)
+    notification_bar = DownloadNotificationBar.new(
+      on_open: ->(path) {
+        system("xdg-open", path)
+      },
+      on_show_folder: ->(path) {
+        system("xdg-open", File.dirname(path))
+      },
+      on_dismiss: -> {
+        # Nothing to do
+      }
+    )
+    notification_bar.set_download(filename, filepath)
+
+    # Add to top of content area
+    @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(notification_bar.widget, 0)
+    notification_bar.widget.show_all
+  end
+
+  # Shows a certificate exception notification bar for TLS errors
+  # Creates the bar dynamically and destroys it when dismissed
+  # Only one notification per host is shown
+  #
+  # @param host [String] Host with certificate error
+  # @param failing_uri [String] Full URI that failed to load
+  # @param certificate [Gio::TlsCertificate] The certificate that caused the error
+  # @param tab [Tab] The tab that encountered the error
+  def show_certificate_exception_bar(host, failing_uri, certificate, tab)
+    # Don't create duplicate notifications for the same host
+    return if @certificate_exception_pending.include?(host)
+    @certificate_exception_pending.add(host)
+
+    notification_bar = CertificateExceptionBar.new(
+      on_allow: ->(allowed_host, uri) {
+        @certificate_exception_manager.allow(allowed_host)
+        @certificate_exception_pending.delete(allowed_host)
+
+        # Allow the certificate in WebKit context and reload
+        @web_context.allow_tls_certificate_for_host(certificate, allowed_host)
+        tab.webview.load_uri(uri)
+
+        puts "Certificate exception added for: #{allowed_host}"
+      },
+      on_dismiss: -> {
+        @certificate_exception_pending.delete(host)
+        # Go back if possible, otherwise load about:blank
+        if tab.webview.can_go_back?
+          tab.webview.go_back
+        else
+          tab.webview.load_uri("about:blank")
+        end
+      }
+    )
+    notification_bar.set_host(host, failing_uri)
+
+    # Add to top of content area
+    @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(notification_bar.widget, 0)
+    notification_bar.widget.show_all
   end
 
 end

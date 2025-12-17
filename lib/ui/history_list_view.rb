@@ -3,7 +3,7 @@ require 'cgi'
 
 # Sidebar view for displaying browsing history
 class HistoryListView
-  attr_reader :list_widget
+  attr_reader :list_widget, :search_entry
 
   # Creates a new history list view
   #
@@ -14,6 +14,18 @@ class HistoryListView
     @favicon_image_creator = favicon_image_creator
     @list_widget = Gtk::ListBox.new
     @list_widget.selection_mode = :single
+
+    # Search state
+    @search_query = nil
+
+    # Search entry widget (to be added to sidebar header)
+    @search_entry = Gtk::SearchEntry.new
+    @search_entry.placeholder_text = "Search history..."
+    @search_entry.signal_connect("search-changed") do
+      query = @search_entry.text.strip
+      @search_query = query.empty? ? nil : query
+      refresh
+    end
 
     # Callback invoked when history item is clicked
     # Signature: ->(visit) { ... } where visit is a hash with 'uri' key
@@ -41,12 +53,40 @@ class HistoryListView
     # Clear existing items
     @list_widget.children.each { |child| @list_widget.remove(child) }
 
-    # Get recent history
-    visits = @history_manager.recent_visits(limit)
+    # Get history items (search results or recent visits)
+    if @search_query && !@search_query.empty?
+      # Use search results - need to convert to visit format
+      pages = @history_manager.search(@search_query, limit)
 
-    visits.each do |visit|
-      row = create_history_row(visit)
-      @list_widget.add(row)
+      if pages.empty?
+        # Show "no results" message
+        no_results_label = Gtk::Label.new("No results found for \"#{@search_query}\"")
+        no_results_label.margin = 20
+        no_results_label.style_context.add_class("dim-label")
+        @list_widget.add(no_results_label)
+      else
+        pages.each do |page|
+          # Convert page format to visit format for create_history_row
+          visit = {
+            'visit_id' => page['id'],  # Use page id as visit id for delete functionality
+            'uri' => page['uri'],
+            'page_title' => page['title'],
+            'visit_title' => page['title'],
+            'visited_at' => page['last_visited_at'],
+            'favicon' => nil  # Favicon not included in search results
+          }
+          row = create_history_row(visit)
+          @list_widget.add(row)
+        end
+      end
+    else
+      # Show recent visits
+      visits = @history_manager.recent_visits(limit)
+
+      visits.each do |visit|
+        row = create_history_row(visit)
+        @list_widget.add(row)
+      end
     end
 
     @list_widget.show_all

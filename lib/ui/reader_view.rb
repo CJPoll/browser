@@ -1,5 +1,4 @@
 require 'gtk3'
-require 'nokogiri'
 
 # Reader view overlay for distraction-free article reading
 #
@@ -7,8 +6,6 @@ require 'nokogiri'
 # - Semi-transparent dark overlay
 # - Centered content container with max-width
 # - Clean typography optimized for reading
-# - Fade-in animation for overlay
-# - Slide-up animation for content
 class ReaderView
   attr_reader :widget
 
@@ -27,12 +24,12 @@ class ReaderView
   # Shows the reader view with extracted content
   #
   # @param title [String] Article title
-  # @param content [String] Article HTML content
+  # @param content [String] Article content (plain text)
   def show(title, content)
     @title_label.text = title || "Untitled"
 
-    # Set content as markup (we'll sanitize it)
-    display_content(content)
+    # Content is already plain text from JavaScript extraction
+    @content_text.text = content || ""
 
     # Calculate 10% margin based on parent window height
     update_top_margin
@@ -228,59 +225,5 @@ class ReaderView
       css_provider,
       Gtk::StyleProvider::PRIORITY_APPLICATION
     )
-  end
-
-  # Displays content in the reader, converting HTML to plain text
-  #
-  # @param html_content [String] HTML content to display
-  def display_content(html_content)
-    return @content_text.text = "" if html_content.nil? || html_content.empty?
-
-    # Parse HTML and extract text
-    doc = Nokogiri::HTML.fragment(html_content)
-
-    # Remove scripts and styles
-    doc.css('script, style, noscript').remove
-
-    # Convert to readable text with paragraph breaks
-    text = extract_readable_text(doc)
-
-    @content_text.text = text
-  end
-
-  # Extracts readable text from Nokogiri document, preserving paragraph structure
-  #
-  # @param doc [Nokogiri::HTML::DocumentFragment] Parsed HTML fragment
-  # @return [String] Readable plain text
-  def extract_readable_text(doc)
-    lines = []
-
-    doc.children.each do |node|
-      case node.name
-      when 'p', 'div', 'article', 'section'
-        text = node.text.strip
-        lines << text << "" unless text.empty?
-      when 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'
-        text = node.text.strip
-        lines << text << "" unless text.empty?
-      when 'ul', 'ol'
-        node.css('li').each do |li|
-          lines << "  • #{li.text.strip}"
-        end
-        lines << ""
-      when 'blockquote'
-        text = node.text.strip.gsub(/\n/, "\n  ")
-        lines << "  #{text}" << "" unless text.empty?
-      when 'text'
-        text = node.text.strip
-        lines << text unless text.empty?
-      else
-        # Recurse into other elements
-        inner_text = extract_readable_text(node)
-        lines << inner_text unless inner_text.empty?
-      end
-    end
-
-    lines.join("\n").gsub(/\n{3,}/, "\n\n").strip
   end
 end

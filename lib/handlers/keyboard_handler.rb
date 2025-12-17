@@ -14,13 +14,13 @@ class KeyboardHandler
   #
   # @param callbacks [Hash] Hash of callback proc groups:
   #   - :toolbar_actions => { focus_url_entry:, show_toolbar:, in_zen_mode: }
-  #   - :sidebar_actions => { toggle:, show_tabs:, show_history:, show_queue:, visible:, mode: }
+  #   - :sidebar_actions => { toggle:, show_tabs:, show_history:, show_queue:, show_downloads:, visible:, mode: }
   #   - :tab_actions => { create:, close_current:, next:, previous:, move_up:, move_down:, get_current: }
   #   - :navigation_actions => { go_back:, go_forward:, reload: }
   #   - :queue_actions => { add_current:, remove_and_next:, next_item:, previous_item:, move_current_up:, move_current_down: }
   #   - :zoom_actions => { zoom_in:, zoom_out:, reset: }
   #   - :mode_actions => { toggle_dark_mode:, toggle_zen_mode:, toggle_inspector: }
-  #   - :window_actions => { reload_browser:, open_new_window:, open_video_popout: }
+  #   - :window_actions => { reload_browser:, open_new_window:, open_video_popout:, open_site_permissions:, open_file: }
   #   - :find_actions => { show_find_bar: }
   # @raise [ArgumentError] if required callback groups or keys are missing
   def initialize(callbacks)
@@ -145,6 +145,10 @@ class KeyboardHandler
       # Ctrl+E: Show tabs in sidebar
       @callbacks[:sidebar_actions][:show_tabs].call
       true
+    when Gdk::Keyval::KEY_j
+      # Ctrl+J: Show downloads in sidebar
+      @callbacks[:sidebar_actions][:show_downloads].call
+      true
     when Gdk::Keyval::KEY_f
       # Ctrl+F: Find in page
       @callbacks[:find_actions][:show_find_bar].call
@@ -181,6 +185,14 @@ class KeyboardHandler
     when Gdk::Keyval::KEY_0
       # Ctrl+0: Reset zoom
       @callbacks[:zoom_actions][:reset].call
+      true
+    when Gdk::Keyval::KEY_comma
+      # Ctrl+Comma: Open site permissions
+      @callbacks[:window_actions][:open_site_permissions].call
+      true
+    when Gdk::Keyval::KEY_o
+      # Ctrl+O: Open file
+      @callbacks[:window_actions][:open_file].call
       true
     else
       false

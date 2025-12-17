@@ -131,7 +131,7 @@ class HistoryManager
   end
 
   def search(query, limit = 50)
-    @db.execute(<<-SQL, "%#{query}%", "%#{query}%", "%#{query}%", limit)
+    @db.execute(<<-SQL, ["%#{query}%", "%#{query}%", "%#{query}%", limit])
       SELECT DISTINCT
         p.id,
         p.uri,
