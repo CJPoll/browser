@@ -14,6 +14,7 @@ GEM
     cairo-gobject (4.3.3)
       cairo (>= 1.16.2)
       glib2 (= 4.3.3)
+    cmdparse (3.0.7)
     crack (1.0.1)
       bigdecimal
       rexml
@@ -26,6 +27,7 @@ GEM
     gdk_pixbuf2 (4.3.3)
       gio2 (= 4.3.3)
       rake
+    geom2d (0.4.1)
     gio2 (4.3.3)
       fiddle
       gobject-introspection (= 4.3.3)
@@ -38,6 +40,11 @@ GEM
       atk (= 4.3.3)
       gdk3 (= 4.3.3)
     hashdiff (1.2.1)
+    hexapdf (1.5.0)
+      cmdparse (~> 3.0, >= 3.0.3)
+      geom2d (~> 0.4, >= 0.4.1)
+      openssl (>= 2.2.1)
+      strscan (>= 3.1.2)
     json (2.16.0)
     matrix (0.4.3)
     mini_portile2 (2.8.9)
@@ -48,6 +55,7 @@ GEM
       racc (~> 1.4)
     nokogiri (1.18.10-x86_64-linux-gnu)
       racc (~> 1.4)
+    openssl (4.0.0)
     pango (4.3.3)
       cairo-gobject (= 4.3.3)
       gobject-introspection (= 4.3.3)
@@ -58,10 +66,12 @@ GEM
     red-colors (0.4.0)
       json
       matrix
+    redcarpet (3.6.1)
     rexml (3.4.4)
     sqlite3 (2.8.0)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.8.0-x86_64-linux-gnu)
+    strscan (3.1.7)
     webkit2-gtk (4.3.3)
       gtk3 (= 4.3.3)
       rake
@@ -76,9 +86,11 @@ PLATFORMS
 
 DEPENDENCIES
   gtk3 (~> 4.3)
+  hexapdf (~> 1.0)
   minitest (~> 5.25)
   nokogiri (~> 1.16)
   rake (~> 13.0)
+  redcarpet (~> 3.6)
   sqlite3 (~> 2.4)
   webkit2-gtk (~> 4.3)
   webmock (~> 3.18)

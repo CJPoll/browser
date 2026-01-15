@@ -48,7 +48,6 @@ class FaviconManager
         surface = @favicon_db.get_favicon_finish(result)
 
         if surface
-          puts "DEBUG: Got favicon surface for #{page_uri}"
           # Convert to PNG to check size
           favicon_data = surface_to_png(surface)
 
@@ -58,7 +57,6 @@ class FaviconManager
             # Track largest favicon seen for this URL
             current_candidate = @favicon_candidates[page_uri]
             if !current_candidate || size > current_candidate[:size]
-              puts "DEBUG: New largest favicon candidate: #{size} bytes (previous: #{current_candidate ? current_candidate[:size] : 0} bytes)"
               @favicon_candidates[page_uri] = {size: size, surface: surface}
             end
 
@@ -72,7 +70,6 @@ class FaviconManager
               # Save the largest favicon we saw
               candidate = @favicon_candidates[page_uri]
               if candidate
-                puts "DEBUG: Debounce timer fired - saving favicon (#{candidate[:size]} bytes) for #{page_uri}"
                 save_favicon_data(page_uri, candidate[:surface])
                 @favicon_candidates.delete(page_uri)
                 @favicon_timers.delete(page_uri)
@@ -81,7 +78,6 @@ class FaviconManager
             end
           end
         else
-          puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
           # Try to get favicon from root domain as fallback
           try_root_domain_favicon(page_uri)
         end
@@ -101,9 +97,6 @@ class FaviconManager
   # Sets up favicon-changed signal handler
   def setup_favicon_signal
     @favicon_db.signal_connect("favicon-changed") do |_db, page_uri, favicon_uri|
-      puts "DEBUG: Favicon changed for page: #{page_uri}"
-      puts "DEBUG: Favicon URI: #{favicon_uri}"
-
       # Favicon changed - try to save it for the current page
       fetch_and_save_favicon(page_uri)
     end
@@ -122,14 +115,11 @@ class FaviconManager
 
       return if root_uri == page_uri  # Already tried root domain
 
-      puts "DEBUG: Trying favicon from #{root_uri}"
-
       @favicon_db.get_favicon(root_uri, nil) do |_object, result|
         begin
           surface = @favicon_db.get_favicon_finish(result)
 
           if surface
-            puts "DEBUG: Got root domain favicon for #{page_uri}"
             save_favicon_data(page_uri, surface)
           else
             puts "DEBUG: No root domain favicon available for #{page_uri}"
@@ -152,7 +142,6 @@ class FaviconManager
     favicon_data = surface_to_png(surface)
 
     if favicon_data
-      puts "DEBUG: Saving favicon data (#{favicon_data.bytesize} bytes) for #{page_uri}"
       @history_manager.update_favicon(page_uri, favicon_data)
 
       # Update tabs with favicon data (access tabs via callback)

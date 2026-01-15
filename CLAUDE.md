@@ -184,6 +184,56 @@ If a web app fails with "undefined is not a function" errors in the console:
 - Use `get(index)` to access features, not array indexing
 - Feature identifiers are case-sensitive (e.g., "FileSystemAccess" not "FileSystemAccessAPI")
 
+### Markdown Rendering
+
+The browser renders `.md` and `.markdown` files with GitHub-flavored styling instead of showing raw text.
+
+**Features:**
+- **Automatic detection**: Any URL ending in `.md` or `.markdown` is rendered
+- **Local and remote**: Works with both `file://` and `http(s)://` URLs
+- **GitHub styling**: Clean typography with dark mode support
+- **View toggle**: Press `Ctrl+U` to switch between rendered and raw source view
+- **GFM support**: Tables, fenced code blocks, strikethrough, footnotes, autolinks
+- **Mermaid diagrams**: Automatic rendering of mermaid code blocks (flowcharts, sequence diagrams, etc.)
+
+**Mermaid Support:**
+- Diagrams in \`\`\`mermaid code blocks are automatically rendered
+- Uses Mermaid.js from CDN (loaded only when mermaid blocks are detected)
+- Supports dark mode (theme switches automatically with system preference)
+- All Mermaid diagram types supported: flowchart, sequence, class, state, ER, Gantt, etc.
+
+**PDF Export with Bookmarks:**
+- Print markdown to PDF via `Ctrl+P` → "Print to File"
+- Dark theme styling preserved in PDF (deep dark background, syntax highlighting)
+- **Automatic bookmark generation**: When printing markdown to PDF, bookmarks are automatically added from heading hierarchy
+- Bookmarks create a navigable table of contents in PDF viewers (e.g., sidebar in Evince)
+- Manual bookmark addition: Use `Ctrl+Shift+B` to add bookmarks to existing PDFs (for PDFs created before this feature or from external sources)
+- Post-processing via HexaPDF: Extracts headings from markdown, finds them in the PDF, builds hierarchical outline structure
+
+**Page Breaks in PDF:**
+You can control page breaks when printing to PDF using HTML comments in your markdown:
+```markdown
+# Section One
+Content for the first page
+
+<!-- pagebreak -->
+
+# Section Two
+This starts on a new page
+```
+- Supported formats: `<!-- pagebreak -->`, `<!-- page-break -->`, `<!-- PAGEBREAK -->` (case-insensitive)
+- Page breaks are invisible in browser view, only active when printing
+- Alternative: Use `<div class="page-break"></div>` for explicit HTML control
+
+**Implementation:**
+- Uses `redcarpet` gem for markdown-to-HTML conversion
+- Intercepts navigation via `decide-policy` signal before WebKit loads content
+- Renders styled HTML and loads via `webview.load_html()`
+- State stored per-webview for toggle functionality
+- Mermaid.js injected from CDN when mermaid blocks are detected
+
+**Handler Location:** `lib/handlers/markdown_handler.rb`
+
 ### Read/Watch/Do Queue
 
 The queue is a FIFO (first-in-first-out) list for managing URLs you want to read, watch, or process later.
@@ -259,9 +309,13 @@ The queue is a FIFO (first-in-first-out) list for managing URLs you want to read
 
 **Other:**
 - `Ctrl+R`: Refresh page
+- `Ctrl+P`: Print page (markdown to PDF automatically includes bookmarks)
 - `Ctrl++` / `Ctrl+=`: Zoom in
 - `Ctrl+-`: Zoom out
 - `Ctrl+0`: Reset zoom to 100%
+- `Ctrl+U`: Toggle markdown source (when viewing `.md` files)
+- `Ctrl+Shift+B`: Add PDF bookmarks to existing PDF (for external PDFs or old PDFs without bookmarks)
+- `Ctrl+O`: Open file (supports HTML, Markdown, PDF, images)
 - `Ctrl+Shift+P`: Video popout (YouTube only)
 - `Ctrl+Shift+R`: Reload browser with latest code
 - `F11`: Toggle zen mode

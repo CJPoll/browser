@@ -5,11 +5,22 @@ require 'gtk3'
 # Thread Safety: Assumes single-threaded GTK main loop execution.
 # All callbacks are expected to run synchronously on the main thread.
 class MouseHandler
+  # URL schemes that should be delegated to xdg-open instead of loaded in WebKit
+  # These are application-specific protocols handled by external programs
+  EXTERNAL_SCHEMES = %w[
+    warp spotify discord slack steam zoommtg zoomus
+    tg telegram signal viber whatsapp
+    vscode vscodium cursor
+    obsidian notion
+    mailto tel sms
+  ].freeze
+
   # Creates a new mouse handler
   #
   # @param callbacks [Hash] Hash of callback procs:
   #   - :get_current_tab => -> { Tab or nil }
   #   - :create_new_tab => ->(uri, switch_to:) { creates tab }
+  #   - :handle_markdown_navigation => ->(webview, uri) { true if handled } (optional)
   # @raise [ArgumentError] if required callbacks are missing
   def initialize(callbacks)
     validate_callbacks(callbacks)
@@ -53,6 +64,7 @@ class MouseHandler
   end
 
   # Handles decide-policy signal for Ctrl+Click to open in new tab
+  # and external URL schemes (warp://, spotify://, etc.)
   # Should be attached to webview decide-policy signal
   #
   # @param webview [WebKit2Gtk::WebView] The webview
@@ -68,6 +80,24 @@ class MouseHandler
     return false unless @callbacks[:get_current_tab].call == current_tab
 
     navigation_action = decision.navigation_action
+    uri_request = navigation_action.request
+    uri = uri_request.uri
+
+    # Check for external URL schemes that should be handled by the system
+    if uri && external_scheme?(uri)
+      decision.ignore
+      system("xdg-open", uri)
+      return true
+    end
+
+    # Check for markdown files that should be rendered
+    if uri && @callbacks[:handle_markdown_navigation]
+      if @callbacks[:handle_markdown_navigation].call(webview, uri)
+        decision.ignore
+        return true
+      end
+    end
+
     modifiers = navigation_action.modifiers
 
     # Check if Ctrl key is pressed
@@ -75,10 +105,6 @@ class MouseHandler
     ctrl_pressed = (modifiers.to_i & Gdk::ModifierType::CONTROL_MASK.to_i) != 0
 
     if ctrl_pressed
-      # Get the URI being navigated to
-      uri_request = navigation_action.request
-      uri = uri_request.uri
-
       # Only handle http/https links
       if uri && (uri.start_with?("http://") || uri.start_with?("https://"))
         # Ignore this navigation in the current tab
@@ -101,6 +127,17 @@ class MouseHandler
   end
 
   private
+
+  # Checks if a URL uses an external scheme that should be handled by the system
+  #
+  # @param url [String] The URL to check
+  # @return [Boolean] true if the URL uses an external scheme
+  def external_scheme?(url)
+    return false unless url.include?("://")
+
+    scheme = url.split("://").first.downcase
+    EXTERNAL_SCHEMES.include?(scheme)
+  end
 
   # Validates that all required callbacks are present
   #

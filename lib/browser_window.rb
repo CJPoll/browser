@@ -31,6 +31,8 @@ require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'managers/article_extractor_js'
 require_relative 'managers/certificate_exception_manager'
+require_relative 'handlers/markdown_handler'
+require_relative 'pdf_bookmark_processor'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -126,10 +128,14 @@ class BrowserWindow < Gtk::Window
     }
     @navigation_handler = NavigationHandler.new(navigation_callbacks)
 
+    # Markdown handler for .md file rendering
+    @markdown_handler = MarkdownHandler.new
+
     # Mouse handler
     mouse_callbacks = {
       get_current_tab: -> { current_tab },
-      create_new_tab: ->(uri, switch_to:) { create_new_tab(uri, switch_to: switch_to) }
+      create_new_tab: ->(uri, switch_to:) { create_new_tab(uri, switch_to: switch_to) },
+      handle_markdown_navigation: ->(webview, uri) { @markdown_handler.handle_navigation(webview, uri) }
     }
     @mouse_handler = MouseHandler.new(mouse_callbacks)
 
@@ -419,10 +425,15 @@ class BrowserWindow < Gtk::Window
         open_new_window: -> { open_new_window },
         open_video_popout: -> { open_video_popout },
         open_site_permissions: -> { open_site_permissions },
-        open_file: -> { open_file }
+        open_file: -> { open_file },
+        print_page: -> { print_page }
       },
       find_actions: {
         show_find_bar: -> { @find_bar.show }
+      },
+      markdown_actions: {
+        toggle_source: -> { toggle_markdown_source },
+        add_pdf_bookmarks: -> { add_pdf_bookmarks }
       }
     }
     @keyboard_handler = KeyboardHandler.new(keyboard_callbacks)
@@ -449,9 +460,11 @@ class BrowserWindow < Gtk::Window
   end
 
   def create_new_tab(uri = "https://www.google.com", switch_to: true)
+    # Create tab WITHOUT loading URI (Tab no longer auto-loads)
     tab = Tab.new(@web_context, @favicon_db, uri)
 
-    # Connect signals for this tab
+    # Connect signals for this tab BEFORE loading URI
+    # This ensures decide-policy handler can intercept markdown files
     setup_tab_signals(tab)
 
     @tabs << tab
@@ -461,6 +474,9 @@ class BrowserWindow < Gtk::Window
       @current_tab_index = @tabs.length - 1
       switch_to_tab(@current_tab_index)
     end
+
+    # NOW load the URI (after decide-policy handler is connected)
+    tab.load_uri(uri)
 
     # Refresh tabs sidebar
     @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
@@ -679,6 +695,21 @@ class BrowserWindow < Gtk::Window
     tab.webview.signal_connect("button-press-event") do |_webview, event|
       next false unless current_tab == tab
       @mouse_handler.handle_button_press(tab.webview, event)
+    end
+
+    # Handle key events on the WebView (for shortcuts that WebKit might intercept)
+    tab.webview.signal_connect("key-press-event") do |_webview, event|
+      next false unless current_tab == tab
+
+      # Ctrl+U: Toggle markdown source view (intercept before WebKit's "View Source")
+      if event.state.control_mask? && !event.state.shift_mask? && !event.state.mod1_mask?
+        if event.keyval == Gdk::Keyval::KEY_u
+          toggle_markdown_source
+          next true  # Event handled, stop propagation
+        end
+      end
+
+      false  # Let other handlers process
     end
 
     # Handle Ctrl+Click to open links in new tab
@@ -1264,6 +1295,80 @@ class BrowserWindow < Gtk::Window
     end
   end
 
+  def toggle_markdown_source
+    return unless current_tab
+    @markdown_handler.toggle_view(current_tab.webview)
+  end
+
+  # Add PDF bookmarks to a previously printed PDF
+  # Prompts user to select the PDF file and adds bookmarks based on current markdown
+  def add_pdf_bookmarks
+    puts "[BookmarkProcessor] add_pdf_bookmarks called"
+
+    unless current_tab
+      puts "[BookmarkProcessor] No current tab, aborting"
+      return
+    end
+
+    unless @markdown_handler.showing_markdown?(current_tab.webview)
+      puts "[BookmarkProcessor] Not showing markdown, aborting"
+      return
+    end
+
+    # Get the markdown content for this webview
+    markdown_content = @markdown_handler.get_markdown_content(current_tab.webview)
+    unless markdown_content
+      puts "[BookmarkProcessor] No markdown content found, aborting"
+      return
+    end
+
+    puts "[BookmarkProcessor] Got markdown content (#{markdown_content.length} bytes)"
+
+    # Open file chooser dialog
+    dialog = Gtk::FileChooserDialog.new(
+      title: "Select PDF to Add Bookmarks",
+      parent: self,
+      action: :open,
+      buttons: [
+        [Gtk::Stock::CANCEL, :cancel],
+        [Gtk::Stock::OPEN, :accept]
+      ]
+    )
+
+    # Add PDF filter
+    filter = Gtk::FileFilter.new
+    filter.name = "PDF Files"
+    filter.add_mime_type("application/pdf")
+    filter.add_pattern("*.pdf")
+    dialog.add_filter(filter)
+
+    puts "[BookmarkProcessor] Showing file chooser dialog"
+
+    # Run dialog
+    if dialog.run == :accept
+      pdf_path = dialog.filename
+      puts "[BookmarkProcessor] User selected PDF: #{pdf_path}"
+      dialog.destroy
+
+      # Add bookmarks in background to avoid blocking UI
+      Thread.new do
+        puts "[BookmarkProcessor] Starting bookmark addition in background thread"
+        success = PdfBookmarkProcessor.add_bookmarks(pdf_path, markdown_content)
+        GLib::Idle.add do
+          if success
+            puts "[BookmarkProcessor] ✓ PDF bookmarks added successfully to #{pdf_path}"
+          else
+            puts "[BookmarkProcessor] ✗ Failed to add PDF bookmarks"
+          end
+          false
+        end
+      end
+    else
+      puts "[BookmarkProcessor] User cancelled file selection"
+      dialog.destroy
+    end
+  end
+
   def toggle_reader_mode
     if @reader_view_active
       @reader_view.hide
@@ -1349,6 +1454,85 @@ class BrowserWindow < Gtk::Window
   end
 
   # ========================================
+  # Print Operations
+  # ========================================
+
+  def print_page
+    return unless current_tab
+
+    # Create print operation for the current webview
+    print_op = WebKit2Gtk::PrintOperation.new(current_tab.webview)
+
+    # Create page setup with zero margins for edge-to-edge printing
+    page_setup = Gtk::PageSetup.new
+    page_setup.set_top_margin(0, Gtk::Unit::MM)
+    page_setup.set_bottom_margin(0, Gtk::Unit::MM)
+    page_setup.set_left_margin(0, Gtk::Unit::MM)
+    page_setup.set_right_margin(0, Gtk::Unit::MM)
+
+    # Apply page setup to print operation
+    print_op.set_page_setup(page_setup)
+
+    # Auto-add bookmarks when printing markdown to PDF
+    print_op.signal_connect('finished') do
+      # Get print settings to check if printing to PDF
+      settings = print_op.print_settings
+      output_uri = settings.get('output-uri') if settings
+
+      # Only auto-add bookmarks if:
+      # 1. Printing to file (not physical printer)
+      # 2. Currently viewing markdown
+      # 3. Output is a PDF file
+      if output_uri &&
+         output_uri.end_with?('.pdf') &&
+         @markdown_handler.showing_markdown?(current_tab.webview)
+
+        # Decode file:// URI to local path
+        pdf_path = URI.decode_www_form_component(output_uri.sub('file://', ''))
+        markdown_content = @markdown_handler.get_markdown_content(current_tab.webview)
+
+        if markdown_content
+          # Save markdown content to temp file
+          require 'tempfile'
+          temp_md = Tempfile.new(['markdown', '.md'])
+          temp_md.write(markdown_content)
+          temp_md.close
+
+          # Add bookmarks in separate Ruby process to isolate potential crashes
+          # Use spawn + detach so browser isn't affected if PDF processing crashes
+          pid = spawn(
+            'bundle', 'exec', 'ruby', '-e',
+            <<~RUBY,
+              sleep 0.5  # Wait for PDF to be fully written
+              require_relative 'lib/pdf_bookmark_processor'
+              markdown = File.read('#{temp_md.path}')
+              success = PdfBookmarkProcessor.add_bookmarks('#{pdf_path}', markdown)
+              puts success ? '[AutoBookmark] ✓ Bookmarks added automatically' : '[AutoBookmark] ✗ Bookmark addition failed'
+              File.delete('#{temp_md.path}') rescue nil
+            RUBY
+            chdir: Dir.pwd,
+            out: $stdout,
+            err: $stderr
+          )
+
+          # Detach the child process so it runs independently
+          Process.detach(pid)
+        end
+      end
+    end
+
+    # Run the print dialog - user can select "Print to File" for PDF output
+    response = print_op.run_dialog(self)
+
+    case response
+    when :print
+      puts "Print started"
+    when :cancel
+      puts "Print cancelled"
+    end
+  end
+
+  # ========================================
   # Window Operations
   # ========================================
 
@@ -1411,6 +1595,14 @@ class BrowserWindow < Gtk::Window
     filter_html.add_pattern("*.html")
     filter_html.add_pattern("*.htm")
     dialog.add_filter(filter_html)
+
+    # Markdown files
+    filter_md = Gtk::FileFilter.new
+    filter_md.name = "Markdown Files"
+    filter_md.add_mime_type("text/markdown")
+    filter_md.add_pattern("*.md")
+    filter_md.add_pattern("*.markdown")
+    dialog.add_filter(filter_md)
 
     # PDF files
     filter_pdf = Gtk::FileFilter.new
@@ -1482,7 +1674,9 @@ class BrowserWindow < Gtk::Window
     request = download.request
     url = request.uri
     response = download.response
-    suggested_filename = response&.suggested_filename || File.basename(URI.parse(url).path)
+    uri_path = URI.parse(url).path
+    suggested_filename = response&.suggested_filename ||
+                         (uri_path && !uri_path.empty? ? File.basename(uri_path) : "download")
 
     # Add to download manager
     download_id = @download_manager.add(url, suggested_filename, nil)

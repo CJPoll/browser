@@ -22,6 +22,7 @@ class KeyboardHandler
   #   - :mode_actions => { toggle_dark_mode:, toggle_zen_mode:, toggle_inspector: }
   #   - :window_actions => { reload_browser:, open_new_window:, open_video_popout:, open_site_permissions:, open_file: }
   #   - :find_actions => { show_find_bar: }
+  #   - :markdown_actions => { toggle_source:, add_pdf_bookmarks: }
   # @raise [ArgumentError] if required callback groups or keys are missing
   def initialize(callbacks)
     validate_callbacks(callbacks)
@@ -62,6 +63,10 @@ class KeyboardHandler
     when Gdk::Keyval::KEY_P
       # Ctrl+Shift+P: Video popout
       @callbacks[:window_actions][:open_video_popout].call
+      true
+    when Gdk::Keyval::KEY_B
+      # Ctrl+Shift+B: Add PDF bookmarks (for markdown files)
+      @callbacks[:markdown_actions][:add_pdf_bookmarks].call
       true
     when Gdk::Keyval::KEY_Q
       # Ctrl+Shift+Q: Add current tab to queue
@@ -194,6 +199,14 @@ class KeyboardHandler
       # Ctrl+O: Open file
       @callbacks[:window_actions][:open_file].call
       true
+    when Gdk::Keyval::KEY_u
+      # Ctrl+U: Toggle markdown source view
+      @callbacks[:markdown_actions][:toggle_source].call
+      true
+    when Gdk::Keyval::KEY_p
+      # Ctrl+P: Print page
+      @callbacks[:window_actions][:print_page].call
+      true
     else
       false
     end
@@ -255,8 +268,9 @@ class KeyboardHandler
       queue_actions: [:add_current, :remove_and_next, :next_item, :previous_item, :move_current_up, :move_current_down, :find_queue_entry_by_url, :show_tag_edit_dialog],
       zoom_actions: [:zoom_in, :zoom_out, :reset],
       mode_actions: [:toggle_dark_mode, :toggle_zen_mode, :toggle_inspector],
-      window_actions: [:reload_browser, :open_new_window, :open_video_popout],
-      find_actions: [:show_find_bar]
+      window_actions: [:reload_browser, :open_new_window, :open_video_popout, :print_page],
+      find_actions: [:show_find_bar],
+      markdown_actions: [:toggle_source, :add_pdf_bookmarks]
     }
 
     # Check for missing groups

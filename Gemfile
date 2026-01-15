@@ -4,6 +4,8 @@ gem 'gtk3', '~> 4.3'
 gem 'webkit2-gtk', '~> 4.3'
 gem 'sqlite3', '~> 2.4'
 gem 'nokogiri', '~> 1.16'
+gem 'redcarpet', '~> 3.6'
+gem 'hexapdf', '~> 1.0'
 
 group :development, :test do
   gem 'minitest', '~> 5.25'

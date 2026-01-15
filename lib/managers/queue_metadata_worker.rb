@@ -313,15 +313,13 @@ class QueueMetadataWorker
 
         # DEBUG: Print full JSON-LD structure
         require 'json'
-        puts "DEBUG JSON-LD full structure:"
-        puts JSON.pretty_generate(data)
+        #puts "DEBUG JSON-LD full structure:"
+        #puts JSON.pretty_generate(data)
 
         # Extract metadata
         title = data['name'] || data['headline']
         channel = data['author'] || data['channelName']
         channel = channel['name'] if channel.is_a?(Hash)  # Handle nested author object
-
-        puts "DEBUG extracted channel: #{channel.inspect}"
 
         # Parse date (ISO 8601 format)
         date_str = data['uploadDate'] || data['datePublished']

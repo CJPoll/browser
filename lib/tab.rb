@@ -68,8 +68,16 @@ class Tab
     # Connect signals
     setup_signals
 
-    # Load initial URI
-    @webview.load_uri(initial_uri)
+    # NOTE: Initial URI is NOT loaded here. BrowserWindow.create_new_tab
+    # loads it after connecting decide-policy signal handler, which allows
+    # markdown files and other special URLs to be intercepted.
+  end
+
+  # Loads a URI into this tab's webview
+  #
+  # @param uri [String] The URI to load
+  def load_uri(uri)
+    @webview.load_uri(uri)
   end
 
   # Sets up WebView signal handlers

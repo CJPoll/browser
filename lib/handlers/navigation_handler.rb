@@ -17,6 +17,16 @@ class NavigationHandler
     @callbacks = callbacks
   end
 
+  # URL schemes that should be delegated to xdg-open instead of loaded in WebKit
+  # These are application-specific protocols handled by external programs
+  EXTERNAL_SCHEMES = %w[
+    warp spotify discord slack steam zoommtg zoomus
+    tg telegram signal viber whatsapp
+    vscode vscodium cursor
+    obsidian notion
+    mailto tel sms
+  ].freeze
+
   # Navigates to the given URL or search query
   #
   # @param text [String] The text from the URL entry
@@ -26,10 +36,23 @@ class NavigationHandler
 
     text_stripped = text.strip
 
+    # Check for external URL schemes that should be handled by the system
+    if external_scheme?(text_stripped)
+      system("xdg-open", text_stripped)
+      return
+    end
+
     # Check if it looks like a URL (has a TLD and no spaces)
     # or if it already starts with a protocol
-    if text_stripped.start_with?("http://", "https://")
+    if text_stripped.start_with?("http://", "https://", "file://")
       url = text_stripped
+    elsif text_stripped.start_with?("/")
+      # Absolute file path - convert to file:// URL
+      url = "file://#{text_stripped}"
+    elsif text_stripped.start_with?("~/")
+      # Home-relative path - expand and convert to file:// URL
+      expanded = File.expand_path(text_stripped)
+      url = "file://#{expanded}"
     elsif text_stripped.match?(/^[\w-]+\.[\w.-]+/) && !text_stripped.include?(' ')
       # Looks like a domain (e.g., "example.com" or "github.com")
       url = "https://#{text_stripped}"
@@ -56,6 +79,17 @@ class NavigationHandler
   end
 
   private
+
+  # Checks if a URL uses an external scheme that should be handled by the system
+  #
+  # @param url [String] The URL to check
+  # @return [Boolean] true if the URL uses an external scheme
+  def external_scheme?(url)
+    return false unless url.include?("://")
+
+    scheme = url.split("://").first.downcase
+    EXTERNAL_SCHEMES.include?(scheme)
+  end
 
   # Normalizes URLs for sites that require specific subdomains
   #
