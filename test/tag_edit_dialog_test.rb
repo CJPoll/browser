@@ -139,22 +139,22 @@ class TagEditDialogTest < Minitest::Test
     # Get tag list box
     tag_list_box = dialog.instance_variable_get(:@tag_list_box)
 
-    # Initially all rows visible
-    visible_count = tag_list_box.children.count { |row| row.visible? }
+    # Initially all rows visible (using @filter_visible for testability without display)
+    visible_count = tag_list_box.children.count { |row| row.instance_variable_get(:@filter_visible) }
     assert_equal 3, visible_count, "All 3 tags should be visible"
 
     # Filter to "Tag1"
     dialog.send(:filter_tag_list, "Tag1")
 
     # Only 1 row visible
-    visible_count = tag_list_box.children.count { |row| row.visible? }
+    visible_count = tag_list_box.children.count { |row| row.instance_variable_get(:@filter_visible) }
     assert_equal 1, visible_count, "Only 1 tag should be visible"
 
     # Clear filter (empty string)
     dialog.send(:filter_tag_list, "")
 
     # All rows visible again
-    visible_count = tag_list_box.children.count { |row| row.visible? }
+    visible_count = tag_list_box.children.count { |row| row.instance_variable_get(:@filter_visible) }
     assert_equal 3, visible_count, "All 3 tags should be visible"
   end
 
@@ -173,7 +173,8 @@ class TagEditDialogTest < Minitest::Test
     dialog.send(:filter_tag_list, "   ")
 
     # All rows should be visible (whitespace stripped to empty string)
-    visible_count = tag_list_box.children.count { |row| row.visible? }
+    # Using @filter_visible for testability without display
+    visible_count = tag_list_box.children.count { |row| row.instance_variable_get(:@filter_visible) }
     assert_equal 3, visible_count, "All tags should be visible for whitespace-only search"
   end
 

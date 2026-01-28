@@ -121,22 +121,30 @@ class YouTubeMetadataWorkerTest < Minitest::Test
   end
 
   def test_oembed_api_fallback
+    require 'webmock/minitest'
+
+    # Stub the oEmbed API request
+    stub_request(:get, "https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+      .to_return(
+        status: 200,
+        body: {
+          title: "Rick Astley - Never Gonna Give You Up (Official Music Video)",
+          author_name: "Rick Astley"
+        }.to_json,
+        headers: { 'Content-Type' => 'application/json' }
+      )
+
     # Execute: Fetch metadata from oEmbed API
-    # NOTE: This is an integration test that makes a real network request
-    # Use a known stable YouTube video (Rick Astley - Never Gonna Give You Up)
     url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     result = @worker.send(:fetch_youtube_oembed_metadata, url)
 
     # Assert: Metadata is fetched
-    # Skip test if network unavailable (don't fail on CI without internet)
-    skip "Network unavailable" unless result
-
     assert_not_nil result, "Should fetch metadata from oEmbed API"
     assert_not_nil result[:title], "Should have title"
     assert_not_nil result[:channel], "Should have channel (author_name)"
     assert_nil result[:date], "oEmbed API does not provide publish date"
 
-    # Verify title contains expected keywords (may change over time)
+    # Verify title contains expected keywords
     assert_match(/Rick Astley/i, result[:title])
   end
 

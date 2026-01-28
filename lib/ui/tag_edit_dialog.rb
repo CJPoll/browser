@@ -102,6 +102,9 @@ class TagEditDialog
 
     # Populate with all tags
     populate_tag_list
+
+    # Ensure rows are visible (needed for tests that don't call show())
+    @tag_list_box.show_all
   end
 
   def populate_tag_list
@@ -141,7 +144,7 @@ class TagEditDialog
         when :invalid_entry
           # Entry was deleted - show error and close dialog
           show_error_dialog("Queue entry no longer exists")
-          @dialog.response(:close)  # Close dialog after error
+          @dialog.response(Gtk::ResponseType::CLOSE)  # Close dialog after error
         # :already_assigned is not an error - silently ignore
         end
       else
@@ -155,7 +158,7 @@ class TagEditDialog
         when :invalid_entry
           # Entry was deleted - show error and close dialog
           show_error_dialog("Queue entry no longer exists")
-          @dialog.response(:close)  # Close dialog after error
+          @dialog.response(Gtk::ResponseType::CLOSE)  # Close dialog after error
         # :not_assigned is not an error - silently ignore
         end
       end
@@ -166,6 +169,11 @@ class TagEditDialog
     # Store tag for filtering
     row.instance_variable_set(:@tag, tag)
     row.instance_variable_set(:@checkbox, checkbox)
+    row.instance_variable_set(:@filter_visible, true)  # Track visibility for tests
+
+    # Show the row and checkbox
+    checkbox.show
+    row.show
 
     row
   end
@@ -180,10 +188,13 @@ class TagEditDialog
 
     @tag_list_box.children.each do |row|
       tag = row.instance_variable_get(:@tag)
-      if search_text.empty? || tag['name'].downcase.include?(search_text)
+      should_show = search_text.empty? || tag['name'].downcase.include?(search_text)
+      if should_show
         row.show
+        row.instance_variable_set(:@filter_visible, true)
       else
         row.hide
+        row.instance_variable_set(:@filter_visible, false)
       end
     end
   end
@@ -272,7 +283,7 @@ class TagEditDialog
     when :invalid_entry
       # Entry was deleted
       show_error_dialog("Queue entry no longer exists")
-      @dialog.response(:close)  # Close dialog after error
+      @dialog.response(Gtk::ResponseType::CLOSE)  # Close dialog after error
     else
       # Unexpected error
       show_error_dialog("Failed to assign tag: #{result}")

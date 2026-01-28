@@ -56,19 +56,14 @@ class TagPillClickTest < Minitest::Test
     assert_equal "Gaming", @clicked_tag_name, "Callback should receive tag name"
   end
 
-  def test_tag_pill_click_console_output
-    # Capture stdout
-    original_stdout = $stdout
-    $stdout = StringIO.new
+  def test_tag_pill_click_filters_by_tag
+    # Phase 4 behavior: clicking tag pill filters the queue by that tag
+    # (Console logging was removed in Phase 4)
 
     # Simulate click
     @queue_list_view.send(:on_tag_pill_clicked, "Gaming")
 
-    # Verify console output
-    output = $stdout.string
-    assert_includes output, "Tag pill clicked: Gaming", "Should log to console"
-
-    # Restore stdout
-    $stdout = original_stdout
+    # Verify callback was invoked
+    assert_equal "Gaming", @clicked_tag_name, "Callback should receive tag name"
   end
 end

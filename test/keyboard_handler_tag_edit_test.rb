@@ -181,7 +181,17 @@ class KeyboardHandlerTagEditTest < Minitest::Test
       window_actions: {
         reload_browser: -> {},
         open_new_window: -> {},
-        open_video_popout: -> {}
+        open_video_popout: -> {},
+        open_site_permissions: -> {},
+        open_file: -> {},
+        print_page: -> {}
+      },
+      find_actions: {
+        show_find_bar: -> {}
+      },
+      markdown_actions: {
+        toggle_source: -> {},
+        add_pdf_bookmarks: -> {}
       }
     }
   end

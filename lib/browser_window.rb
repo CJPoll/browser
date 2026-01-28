@@ -29,8 +29,10 @@ require_relative 'ui/download_list_view'
 require_relative 'ui/download_notification_bar'
 require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/site_permissions_window'
+require_relative 'ui/autocomplete_popover'
 require_relative 'managers/article_extractor_js'
 require_relative 'managers/certificate_exception_manager'
+require_relative 'managers/autocomplete_manager'
 require_relative 'handlers/markdown_handler'
 require_relative 'pdf_bookmark_processor'
 
@@ -138,6 +140,27 @@ class BrowserWindow < Gtk::Window
       handle_markdown_navigation: ->(webview, uri) { @markdown_handler.handle_navigation(webview, uri) }
     }
     @mouse_handler = MouseHandler.new(mouse_callbacks)
+
+    # === Autocomplete Setup ===
+    # Create autocomplete manager for URL suggestions
+    @autocomplete_manager = AutocompleteManager.new(@history_manager)
+
+    # Create autocomplete popover attached to URL entry
+    autocomplete_callbacks = {
+      on_select: ->(uri) {
+        @url_entry.text = uri
+        @autocomplete_popover.hide
+        @navigation_handler.navigate_to(uri)
+      },
+      create_favicon_image: ->(data) { create_favicon_image(data) }
+    }
+    @autocomplete_popover = AutocompletePopover.new(@url_entry, autocomplete_callbacks)
+
+    # Wire toolbar autocomplete callback and popover reference
+    @toolbar_component.on_autocomplete = ->(query) {
+      handle_autocomplete(query)
+    }
+    @toolbar_component.autocomplete_popover = @autocomplete_popover
 
     # Pack toolbar into main layout
     vbox.pack_start(@toolbar, expand: false, fill: false, padding: 0)
@@ -960,6 +983,42 @@ class BrowserWindow < Gtk::Window
 
   def on_forward
     current_tab.webview.go_forward if current_tab
+  end
+
+  # ========================================
+  # Autocomplete
+  # ========================================
+
+  # Handles autocomplete requests from the toolbar
+  #
+  # @param query [String] User's search query
+  def handle_autocomplete(query)
+    # Skip for URLs (contain :// or start with localhost/IP)
+    if query.include?("://") || query.match?(/^(localhost|127\.|192\.168\.|10\.)/)
+      @autocomplete_popover.hide
+      return
+    end
+
+    # Skip for very short queries
+    if query.length < 2
+      @autocomplete_popover.hide
+      return
+    end
+
+    # Get suggestions from autocomplete manager
+    candidates = @autocomplete_manager.suggest(query)
+
+    # Prepend raw query as first result so Enter searches/navigates the typed text
+    raw_query_entry = {
+      uri: query,
+      title: "Search or navigate: #{query}",
+      favicon: nil,
+      frecency: Float::INFINITY  # Always highest priority
+    }
+    candidates = [raw_query_entry] + candidates
+
+    @autocomplete_popover.update(candidates)
+    @autocomplete_popover.show
   end
 
   # ========================================

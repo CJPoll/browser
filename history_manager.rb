@@ -180,6 +180,28 @@ class HistoryManager
     SQL
   end
 
+  # Returns top pages sorted by a rough frecency approximation
+  #
+  # This method returns candidate pages for autocomplete, pre-sorted by a
+  # rough frecency score calculated in SQL. The actual frecency scoring
+  # is done in Ruby by the Frecency module, but this SQL query ensures
+  # we get the most relevant candidates without loading the entire history.
+  #
+  # The SQL scoring formula is: (visit_count * 10) + (last_visited_at / 86400)
+  # This gives a rough approximation that prioritizes both frequency and recency.
+  #
+  # @param limit [Integer] Maximum number of pages to return (default: 500)
+  # @return [Array<Hash>] Pages with uri, title, favicon, visit_count, last_visited_at
+  def top_pages_by_frecency(limit = 500)
+    @db.execute(<<-SQL, limit)
+      SELECT uri, title, favicon, visit_count, last_visited_at
+      FROM pages
+      WHERE visit_count > 0
+      ORDER BY (visit_count * 10) + (last_visited_at / 86400) DESC
+      LIMIT ?
+    SQL
+  end
+
   # Delete a specific visit by ID
   #
   # @param visit_id [Integer] The visit ID to delete

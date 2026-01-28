@@ -1,5 +1,37 @@
 require 'minitest/autorun'
 require 'minitest/assertions'
+
+# Custom reporter that stops after N failures
+module Minitest
+  class FailAfterThresholdReporter < Reporter
+    FAILURE_THRESHOLD = 3
+
+    def initialize(io = $stdout, options = {})
+      super
+      @failure_count = 0
+    end
+
+    def record(result)
+      failures = result.failures.reject { |f| f.is_a?(Minitest::Skip) }
+      if failures.any?
+        @failure_count += 1
+        if @failure_count >= FAILURE_THRESHOLD
+          io.puts
+          io.puts "Stopping after #{FAILURE_THRESHOLD} failures."
+          raise Interrupt
+        end
+      end
+    end
+  end
+
+  # Plugin hooks for Minitest
+  def self.plugin_fail_after_threshold_init(options)
+    self.reporter.reporters << FailAfterThresholdReporter.new(options[:io], options)
+  end
+
+  # Register the plugin
+  extensions << 'fail_after_threshold'
+end
 require 'tempfile'
 require 'fileutils'
 require 'gtk3'

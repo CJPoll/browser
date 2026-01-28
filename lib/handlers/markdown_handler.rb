@@ -545,6 +545,7 @@ class MarkdownHandler
           -webkit-print-color-adjust: exact !important;
           print-color-adjust: exact !important;
           color-adjust: exact !important;
+          font-size: 90% !important;
         }
 
         @page {
@@ -677,12 +678,6 @@ class MarkdownHandler
         /* Ensure mermaid diagrams render in print */
         .mermaid {
           page-break-inside: avoid;
-        }
-
-        /* Don't inherit markdown's grey text color - let mermaid theme control colors */
-        .mermaid,
-        .mermaid * {
-          color: revert !important;
         }
 
         .mermaid svg {
@@ -828,109 +823,6 @@ class MarkdownHandler
           let isPrinting = false;
           let renderedDiagrams = new Map();
 
-          // Fix text colors on light-colored nodes (pink, green, yellow, etc.)
-          function fixLightNodeTextColors() {
-            console.log('[TextFix] Starting text color fix...');
-
-            // Group shapes by parent node and find the lightest color in each node
-            const nodeMap = new Map(); // parent element -> max luminance
-
-            document.querySelectorAll('.mermaid svg rect, .mermaid svg path').forEach(function(shape) {
-              // Get computed fill color
-              const computedFill = window.getComputedStyle(shape).fill;
-              const attrFill = shape.getAttribute('fill');
-              let fill = computedFill || attrFill;
-
-              if (!fill || fill === 'none' || fill === 'transparent') return;
-              fill = String(fill);
-
-              // Parse color to RGB
-              let r = 0, g = 0, b = 0;
-
-              if (fill.startsWith('rgb')) {
-                const matches = fill.match(/[0-9]+/g);
-                if (matches && matches.length >= 3) {
-                  r = parseInt(matches[0]);
-                  g = parseInt(matches[1]);
-                  b = parseInt(matches[2]);
-                }
-              } else if (fill.startsWith('#')) {
-                const hex = fill.substring(1);
-                r = parseInt(hex.substr(0, 2), 16);
-                g = parseInt(hex.substr(2, 2), 16);
-                b = parseInt(hex.substr(4, 2), 16);
-              } else if (fill.startsWith('hsl')) {
-                const matches = fill.match(/([0-9.]+)/g);
-                if (matches && matches.length >= 3) {
-                  const h = parseFloat(matches[0]);
-                  const s = parseFloat(matches[1]) / 100;
-                  const l = parseFloat(matches[2]) / 100;
-
-                  const c = (1 - Math.abs(2 * l - 1)) * s;
-                  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
-                  const m = l - c / 2;
-
-                  let r1, g1, b1;
-                  if (h < 60) { r1 = c; g1 = x; b1 = 0; }
-                  else if (h < 120) { r1 = x; g1 = c; b1 = 0; }
-                  else if (h < 180) { r1 = 0; g1 = c; b1 = x; }
-                  else if (h < 240) { r1 = 0; g1 = x; b1 = c; }
-                  else if (h < 300) { r1 = x; g1 = 0; b1 = c; }
-                  else { r1 = c; g1 = 0; b1 = x; }
-
-                  r = Math.round((r1 + m) * 255);
-                  g = Math.round((g1 + m) * 255);
-                  b = Math.round((b1 + m) * 255);
-                }
-              }
-
-              // Calculate relative luminance
-              const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
-
-              // Find parent node group
-              let parent = shape.parentElement;
-              while (parent && !parent.classList.contains('node') && parent.tagName !== 'g') {
-                parent = parent.parentElement;
-              }
-
-              if (parent) {
-                // Track the maximum luminance for this node (lightest color = background)
-                const currentMax = nodeMap.get(parent) || 0;
-                if (luminance > currentMax) {
-                  nodeMap.set(parent, luminance);
-                  console.log('[TextFix] Node max luminance:', luminance, 'from', fill);
-                }
-              }
-            });
-
-            // Track which text elements we've seen and their luminance
-            const textLuminanceMap = new Map(); // text element -> luminance
-
-            // Now apply text colors based on the lightest color in each node
-            nodeMap.forEach(function(maxLuminance, parent) {
-              const texts = parent.querySelectorAll('text, tspan, foreignObject, foreignObject *');
-
-              texts.forEach(function(text) {
-                // Only update if we haven't seen this text, or if this luminance is higher
-                const existingLuminance = textLuminanceMap.get(text);
-                if (existingLuminance === undefined || maxLuminance > existingLuminance) {
-                  textLuminanceMap.set(text, maxLuminance);
-
-                  const isLight = maxLuminance > 128;
-                  if (isLight) {
-                    text.style.fill = '#000000';
-                    text.style.color = '#000000';
-                  } else {
-                    text.style.fill = '#cccccc';
-                    text.style.color = '#cccccc';
-                  }
-                }
-              });
-            });
-
-            console.log('[TextFix] Text color fix complete -', textLuminanceMap.size, 'text elements processed from', nodeMap.size, 'nodes');
-          }
-
           document.addEventListener('DOMContentLoaded', function() {
             // Detect dark mode
             const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -947,33 +839,8 @@ class MarkdownHandler
               }
             });
 
-            // Watch for mermaid diagrams being added/modified
-            const observer = new MutationObserver(function(mutations) {
-              mutations.forEach(function(mutation) {
-                if (mutation.type === 'childList' || mutation.type === 'attributes') {
-                  // Check if any mermaid diagrams are now rendered
-                  const processedDiagrams = document.querySelectorAll('.mermaid[data-processed="true"]');
-                  if (processedDiagrams.length > 0) {
-                    console.log('[TextFix] Detected rendered mermaid diagrams, fixing text colors...');
-                    fixLightNodeTextColors();
-                  }
-                }
-              });
-            });
-
-            // Observe all mermaid elements
-            document.querySelectorAll('.mermaid').forEach(function(el) {
-              observer.observe(el, {
-                childList: true,
-                subtree: true,
-                attributes: true,
-                attributeFilter: ['data-processed']
-              });
-            });
-
-            // Also use timeouts as backup
+            // Save rendered diagrams after they load
             setTimeout(function() {
-              fixLightNodeTextColors();
               document.querySelectorAll('.mermaid[data-processed="true"]').forEach(function(el) {
                 renderedDiagrams.set(el, el.cloneNode(true));
               });
@@ -1003,7 +870,6 @@ class MarkdownHandler
                     }
                   }
                 });
-                fixLightNodeTextColors();
               }, 100);
             });
 
@@ -1018,9 +884,8 @@ class MarkdownHandler
                   el.removeAttribute('data-processed');
                 });
                 mermaid.init();
-                // Save new rendered state and fix text colors
+                // Save new rendered state
                 setTimeout(function() {
-                  fixLightNodeTextColors();
                   document.querySelectorAll('.mermaid[data-processed="true"]').forEach(function(el) {
                     renderedDiagrams.set(el, el.cloneNode(true));
                   });
