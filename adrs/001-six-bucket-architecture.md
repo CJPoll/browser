@@ -42,8 +42,10 @@ Every class or module belongs to exactly one of these six buckets:
    Domain objects (or primitives). Adapters are mocked in tests.
 5. **Domain** (`lib/domain/`) -- Side-effect-free business logic. Pure
    functions, immutable structs, value objects. Given the same inputs it
-   always returns the same outputs. No IO, no clock reads (inject `now` as a
-   parameter, as `Domain::Frecency.score` does), no database, no GTK.
+   always returns the same outputs. No IO, no clock reads, no database, no
+   GTK. The current time is a **required** parameter (`now`/`now:`), never a
+   defaulted one -- a default is still a clock read. The calling Manager owns
+   the clock; see `Domain::Frecency.score` and `Domain::Download`.
 6. **Managers** (`lib/managers/`) -- Orchestration between Repositories,
    Adapters, and Domain. A Manager takes a use case end to end: fetch inputs
    through a repository or adapter, pass them through Domain functions,
@@ -102,8 +104,8 @@ Current classes that already conform:
 
 | File | Bucket |
 |------|--------|
-| `lib/domain/frecency.rb` | Domain (model citizen -- injectable clock) |
-| `lib/domain/download.rb` | Domain (after removing uninjected `Time.now`) |
+| `lib/domain/frecency.rb` | Domain (conforms -- `now` is a required parameter) |
+| `lib/domain/download.rb` | Domain (conforms -- `created_at:`/`now:` supplied by the caller) |
 | `lib/adapters/download_repository.rb` | Repositories (move to `lib/repositories/`) |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
 | `lib/managers/autocomplete_manager.rb` | Managers |
@@ -158,10 +160,23 @@ class Repositories::QueueRepository
   end
 end
 
-# Domain is pure; the clock is injected
+# Domain is pure; the clock is a required parameter, never a default
 module Domain::Frecency
-  def self.score(visit_count, last_visited_at, now = Time.now.to_i)
+  def self.score(visit_count, last_visited_at, now)
     # pure computation
+  end
+end
+
+# The Manager owns the clock and supplies it to Domain.
+# A default belongs here, at the call boundary -- not inside Domain.
+class AutocompleteManager
+  def initialize(history_manager, clock: -> { Time.now })
+    @clock = clock
+  end
+
+  def build_candidates
+    now = @clock.call.to_i
+    pages.map { |p| Domain::Frecency.score(p.visit_count, p.last_visited_at, now) }
   end
 end
 ```

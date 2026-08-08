@@ -8,6 +8,9 @@ class DownloadRepositoryTest < Minitest::Test
     @test_db_path = '/tmp/test_downloads.db'
     FileUtils.rm_f(@test_db_path)
     @repository = Repositories::DownloadRepository.new(db_path: @test_db_path)
+    # Download never reads the clock; its callers supply timestamps. These
+    # tests stand in for the Manager that normally does so.
+    @now = Time.now
   end
 
   def teardown
@@ -15,8 +18,18 @@ class DownloadRepositoryTest < Minitest::Test
     FileUtils.rm_f(@test_db_path)
   end
 
+  # Builds a Download with a caller-supplied creation time.
+  def build_download(url:, destination:, created_at: @now, **overrides)
+    Download.new(
+      url: url,
+      destination: destination,
+      created_at: created_at,
+      **overrides
+    )
+  end
+
   def test_save_new_download
-    download = Download.new(
+    download = build_download(
       url: 'https://example.com/file.pdf',
       destination: '/tmp/file.pdf'
     )
@@ -30,13 +43,14 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_save_updates_existing_download
-    download = Download.new(
+    download = build_download(
       url: 'https://example.com/file.pdf',
       destination: '/tmp/file.pdf'
     )
 
     saved = @repository.save(download)
-    updated = saved.mark_started.with(bytes_received: 512, total_bytes: 1024)
+    updated = saved.mark_started(now: @now + 1)
+                   .with(bytes_received: 512, total_bytes: 1024)
 
     result = @repository.save(updated)
 
@@ -47,7 +61,7 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_find_by_id_existing
-    download = Download.new(
+    download = build_download(
       url: 'https://example.com/file.pdf',
       destination: '/tmp/file.pdf'
     )
@@ -73,15 +87,15 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_find_all_returns_newest_first
-    old = Download.new(
+    old = build_download(
       url: 'https://example.com/old.pdf',
       destination: '/tmp/old.pdf',
-      created_at: Time.now - 3600
+      created_at: @now - 3600
     )
-    new_dl = Download.new(
+    new_dl = build_download(
       url: 'https://example.com/new.pdf',
       destination: '/tmp/new.pdf',
-      created_at: Time.now
+      created_at: @now
     )
 
     @repository.save(old)
@@ -95,19 +109,19 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_find_active_only_returns_pending_and_in_progress
-    pending = Download.new(
+    pending = build_download(
       url: 'https://example.com/pending.pdf',
       destination: '/tmp/pending.pdf'
     )
-    in_progress = Download.new(
+    in_progress = build_download(
       url: 'https://example.com/in_progress.pdf',
       destination: '/tmp/in_progress.pdf'
-    ).mark_started
+    ).mark_started(now: @now + 1)
 
-    completed = Download.new(
+    completed = build_download(
       url: 'https://example.com/completed.pdf',
       destination: '/tmp/completed.pdf'
-    ).mark_started.mark_completed
+    ).mark_started(now: @now + 1).mark_completed(now: @now + 2)
 
     @repository.save(pending)
     @repository.save(in_progress)
@@ -123,14 +137,14 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_find_by_state
-    pending = Download.new(
+    pending = build_download(
       url: 'https://example.com/pending.pdf',
       destination: '/tmp/pending.pdf'
     )
-    failed = Download.new(
+    failed = build_download(
       url: 'https://example.com/failed.pdf',
       destination: '/tmp/failed.pdf'
-    ).mark_started.mark_failed('Network error')
+    ).mark_started(now: @now + 1).mark_failed('Network error', now: @now + 2)
 
     @repository.save(pending)
     @repository.save(failed)
@@ -143,7 +157,7 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_delete_removes_download
-    download = Download.new(
+    download = build_download(
       url: 'https://example.com/file.pdf',
       destination: '/tmp/file.pdf'
     )
@@ -157,7 +171,7 @@ class DownloadRepositoryTest < Minitest::Test
 
   def test_delete_all_removes_everything
     3.times do |i|
-      download = Download.new(
+      download = build_download(
         url: "https://example.com/file#{i}.pdf",
         destination: "/tmp/file#{i}.pdf"
       )
@@ -171,17 +185,17 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_delete_by_state
-    completed = Download.new(
+    completed = build_download(
       url: 'https://example.com/completed.pdf',
       destination: '/tmp/completed.pdf'
-    ).mark_started.mark_completed
+    ).mark_started(now: @now + 1).mark_completed(now: @now + 2)
 
-    failed = Download.new(
+    failed = build_download(
       url: 'https://example.com/failed.pdf',
       destination: '/tmp/failed.pdf'
-    ).mark_started.mark_failed('Error')
+    ).mark_started(now: @now + 1).mark_failed('Error', now: @now + 2)
 
-    pending = Download.new(
+    pending = build_download(
       url: 'https://example.com/pending.pdf',
       destination: '/tmp/pending.pdf'
     )
@@ -199,12 +213,14 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_delete_older_than
-    old = Download.new(
+    # delete_older_than compares against the real clock, so these ages are
+    # anchored to Time.now rather than a fixed instant.
+    old = build_download(
       url: 'https://example.com/old.pdf',
       destination: '/tmp/old.pdf',
       created_at: Time.now - (31 * 24 * 3600) # 31 days ago
     )
-    recent = Download.new(
+    recent = build_download(
       url: 'https://example.com/recent.pdf',
       destination: '/tmp/recent.pdf',
       created_at: Time.now - (15 * 24 * 3600) # 15 days ago
@@ -227,11 +243,11 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_find_existing_paths_finds_matches
-    download1 = Download.new(
+    download1 = build_download(
       url: 'https://example.com/file1.pdf',
       destination: '/tmp/file1.pdf'
     )
-    download2 = Download.new(
+    download2 = build_download(
       url: 'https://example.com/file2.pdf',
       destination: '/tmp/file2.pdf'
     )
@@ -252,25 +268,24 @@ class DownloadRepositoryTest < Minitest::Test
   end
 
   def test_preserves_timestamps
-    download = Download.new(
+    download = build_download(
       url: 'https://example.com/file.pdf',
       destination: '/tmp/file.pdf'
-    ).mark_started.mark_completed
+    ).mark_started(now: @now + 1).mark_completed(now: @now + 2)
 
     saved = @repository.save(download)
     found = @repository.find_by_id(saved.id)
 
-    refute_nil found.created_at
-    refute_nil found.started_at
-    refute_nil found.completed_at
-    assert found.completed_at >= found.started_at
-    assert found.started_at >= found.created_at
+    # Timestamps round-trip through integer Unix seconds.
+    assert_equal @now.to_i, found.created_at.to_i
+    assert_equal (@now + 1).to_i, found.started_at.to_i
+    assert_equal (@now + 2).to_i, found.completed_at.to_i
   end
 
   def test_thread_safety
     threads = 10.times.map do |i|
       Thread.new do
-        download = Download.new(
+        download = build_download(
           url: "https://example.com/file#{i}.pdf",
           destination: "/tmp/file#{i}.pdf"
         )

@@ -16,9 +16,14 @@ require_relative '../domain/download'
 class DownloadCoordinator
   # Creates a new DownloadCoordinator
   #
+  # Owns the clock on behalf of the Download domain object, which never reads
+  # it. Tests inject a controllable clock to make timestamps deterministic.
+  #
   # @param repository [Repositories::DownloadRepository] Repository for persisting downloads
-  def initialize(repository)
+  # @param clock [#call] Returns the current Time
+  def initialize(repository, clock: -> { Time.now })
     @repository = repository
+    @clock = clock
   end
 
   # Starts a new download
@@ -32,7 +37,11 @@ class DownloadCoordinator
     resolved_destination = Download.resolve_filename_conflict(destination, existing_paths)
 
     # Create and persist download
-    download = Download.new(url: url, destination: resolved_destination)
+    download = Download.new(
+      url: url,
+      destination: resolved_destination,
+      created_at: @clock.call
+    )
     @repository.save(download)
   end
 
@@ -48,7 +57,8 @@ class DownloadCoordinator
 
     # Transition to in_progress if still pending
     updated = if download.state == :pending
-                download.mark_started.with(bytes_received: bytes_received, total_bytes: total_bytes)
+                download.mark_started(now: @clock.call)
+                        .with(bytes_received: bytes_received, total_bytes: total_bytes)
               else
                 download.with(bytes_received: bytes_received, total_bytes: total_bytes)
               end
@@ -64,7 +74,7 @@ class DownloadCoordinator
     download = @repository.find_by_id(download_id)
     return nil unless download
 
-    updated = download.mark_completed
+    updated = download.mark_completed(now: @clock.call)
     @repository.save(updated)
   end
 
@@ -77,7 +87,7 @@ class DownloadCoordinator
     download = @repository.find_by_id(download_id)
     return nil unless download
 
-    updated = download.mark_failed(error_message)
+    updated = download.mark_failed(error_message, now: @clock.call)
     @repository.save(updated)
   end
 
@@ -90,7 +100,7 @@ class DownloadCoordinator
     return nil unless download
     return nil unless download.can_cancel?
 
-    updated = download.mark_cancelled
+    updated = download.mark_cancelled(now: @clock.call)
     @repository.save(updated)
   end
 

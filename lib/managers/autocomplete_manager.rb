@@ -30,9 +30,14 @@ class AutocompleteManager
 
   # Creates a new AutocompleteManager
   #
+  # Owns the clock on behalf of the Frecency domain module, which never reads
+  # it. Tests inject a controllable clock to make scoring deterministic.
+  #
   # @param history_manager [HistoryManager] History database manager
-  def initialize(history_manager)
+  # @param clock [#call] Returns the current Time
+  def initialize(history_manager, clock: -> { Time.now })
     @history_manager = history_manager
+    @clock = clock
     @cache = nil
     @cache_expires_at = 0
   end
@@ -80,7 +85,7 @@ class AutocompleteManager
   #
   # @return [Array<Hash>] Candidates sorted by frecency score
   def cached_candidates
-    now = Time.now.to_i
+    now = @clock.call.to_i
 
     if @cache.nil? || now >= @cache_expires_at
       @cache = build_candidates(now)

@@ -20,8 +20,9 @@
 #
 # @example Calculate frecency score
 #   visit_count = 10
-#   last_visited = Time.now.to_i - 3600  # 1 hour ago
-#   score = Frecency.score(visit_count, last_visited)  # => 1000
+#   now = clock.call.to_i                # supplied by the caller
+#   last_visited = now - 3600            # 1 hour ago
+#   score = Frecency.score(visit_count, last_visited, now)  # => 1000
 #
 module Frecency
   # Recency weight thresholds (in seconds) mapped to weights
@@ -38,9 +39,9 @@ module Frecency
   #
   # @param visit_count [Integer] Number of times the page has been visited
   # @param last_visited_at [Integer] Unix timestamp of last visit
-  # @param now [Integer] Current Unix timestamp (defaults to Time.now.to_i)
+  # @param now [Integer] Current Unix timestamp, supplied by the caller
   # @return [Integer] Frecency score (higher = more relevant)
-  def self.score(visit_count, last_visited_at, now = Time.now.to_i)
+  def self.score(visit_count, last_visited_at, now)
     seconds_ago = now - last_visited_at
     weight = recency_weight(seconds_ago)
     visit_count * weight

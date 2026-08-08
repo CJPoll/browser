@@ -3,6 +3,7 @@
 # This is a pure, immutable domain object with no side effects:
 # - No database operations
 # - No file system operations
+# - No clock reads: every timestamp is supplied by the caller
 # - Pure business logic only
 # - All state changes return new instances
 #
@@ -37,23 +38,24 @@ class Download
   # @param bytes_received [Integer] Bytes downloaded so far
   # @param total_bytes [Integer, nil] Total bytes (nil if unknown)
   # @param error_message [String, nil] Error message for failed downloads
-  # @param created_at [Time, nil] Creation timestamp
+  # @param created_at [Time] Creation timestamp, supplied by the caller
   # @param started_at [Time, nil] Download start timestamp
   # @param completed_at [Time, nil] Completion timestamp
   def initialize(
     url:,
     destination:,
+    created_at:,
     id: nil,
     state: :pending,
     bytes_received: 0,
     total_bytes: nil,
     error_message: nil,
-    created_at: nil,
     started_at: nil,
     completed_at: nil
   )
     raise ArgumentError, "URL is required" if url.nil? || url.to_s.strip.empty?
     raise ArgumentError, "Destination is required" if destination.nil? || destination.to_s.strip.empty?
+    raise ArgumentError, "created_at is required" if created_at.nil?
     raise ArgumentError, "Invalid state: #{state}" unless STATES.include?(state)
 
     @id = id
@@ -63,7 +65,7 @@ class Download
     @bytes_received = bytes_received || 0
     @total_bytes = total_bytes
     @error_message = error_message
-    @created_at = created_at || Time.now
+    @created_at = created_at
     @started_at = started_at
     @completed_at = completed_at
   end
@@ -111,31 +113,35 @@ class Download
 
   # Returns a new Download marked as completed
   #
+  # @param now [Time] Time at which the download completed
   # @return [Download] New download instance with completed state
-  def mark_completed
-    with(state: :completed, completed_at: Time.now)
+  def mark_completed(now:)
+    with(state: :completed, completed_at: now)
   end
 
   # Returns a new Download marked as failed
   #
   # @param message [String] Error message describing the failure
+  # @param now [Time] Time at which the download failed
   # @return [Download] New download instance with failed state
-  def mark_failed(message)
-    with(state: :failed, error_message: message, completed_at: Time.now)
+  def mark_failed(message, now:)
+    with(state: :failed, error_message: message, completed_at: now)
   end
 
   # Returns a new Download marked as cancelled
   #
+  # @param now [Time] Time at which the download was cancelled
   # @return [Download] New download instance with cancelled state
-  def mark_cancelled
-    with(state: :cancelled, completed_at: Time.now)
+  def mark_cancelled(now:)
+    with(state: :cancelled, completed_at: now)
   end
 
   # Returns a new Download marked as in progress
   #
+  # @param now [Time] Time at which the download started
   # @return [Download] New download instance with in_progress state
-  def mark_started
-    with(state: :in_progress, started_at: Time.now)
+  def mark_started(now:)
+    with(state: :in_progress, started_at: now)
   end
 
   # Calculates progress percentage

@@ -43,13 +43,32 @@ class MockDownloadRepository
   end
 end
 
+# Controllable clock so timestamps written by the coordinator are assertable.
+class TestClock
+  def initialize(start)
+    @time = start
+  end
+
+  def call
+    @time
+  end
+
+  def advance(seconds)
+    @time += seconds
+    self
+  end
+end
+
 # Load the coordinator after defining mock
 require_relative '../../lib/managers/download_coordinator'
 
 class DownloadCoordinatorTest < Minitest::Test
+  START_TIME = Time.at(1_700_000_000).freeze
+
   def setup
     @repository = MockDownloadRepository.new
-    @coordinator = DownloadCoordinator.new(@repository)
+    @clock = TestClock.new(START_TIME)
+    @coordinator = DownloadCoordinator.new(@repository, clock: @clock)
   end
 
   def test_start_download_creates_download_record
@@ -62,6 +81,12 @@ class DownloadCoordinatorTest < Minitest::Test
     assert_equal url, download.url
     assert_equal destination, download.destination
     assert_equal :pending, download.state
+  end
+
+  def test_start_download_stamps_created_at_from_the_clock
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+
+    assert_equal START_TIME, download.created_at
   end
 
   def test_start_download_resolves_filename_conflicts
@@ -87,34 +112,57 @@ class DownloadCoordinatorTest < Minitest::Test
     assert_equal 50.0, updated.progress_percentage
   end
 
+  def test_update_progress_stamps_started_at_from_the_clock
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @clock.advance(30)
+
+    updated = @coordinator.update_progress(download.id, bytes_received: 512, total_bytes: 1024)
+
+    assert_equal START_TIME + 30, updated.started_at
+  end
+
+  def test_update_progress_leaves_started_at_alone_once_in_progress
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @clock.advance(30)
+    @coordinator.update_progress(download.id, bytes_received: 100, total_bytes: 1024)
+    @clock.advance(30)
+
+    updated = @coordinator.update_progress(download.id, bytes_received: 512, total_bytes: 1024)
+
+    assert_equal START_TIME + 30, updated.started_at
+  end
+
   def test_mark_completed
     download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
     @coordinator.update_progress(download.id, bytes_received: 100, total_bytes: 100)
+    @clock.advance(90)
 
     completed = @coordinator.mark_completed(download.id)
 
     assert_equal :completed, completed.state
-    refute_nil completed.completed_at
+    assert_equal START_TIME + 90, completed.completed_at
   end
 
   def test_mark_failed
     download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @clock.advance(5)
 
     failed = @coordinator.mark_failed(download.id, 'Network error')
 
     assert_equal :failed, failed.state
     assert_equal 'Network error', failed.error_message
-    refute_nil failed.completed_at
+    assert_equal START_TIME + 5, failed.completed_at
   end
 
   def test_cancel_download
     download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
     @coordinator.update_progress(download.id, bytes_received: 50, total_bytes: 100)
+    @clock.advance(15)
 
     cancelled = @coordinator.cancel_download(download.id)
 
     assert_equal :cancelled, cancelled.state
-    refute_nil cancelled.completed_at
+    assert_equal START_TIME + 15, cancelled.completed_at
   end
 
   def test_cancel_returns_nil_for_nonexistent_download

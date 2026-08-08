@@ -200,19 +200,14 @@ class FrecencyTest < Minitest::Test
   end
 
   # ========================================
-  # Default Parameter Tests
+  # Clock Injection
   # ========================================
 
-  def test_score_uses_current_time_by_default
-    # Without explicit now, should use Time.now.to_i
-    visit_count = 1
-    # Visit 1 hour ago from actual now
-    last_visited_at = Time.now.to_i - (1 * 3600)
-
-    score = Frecency.score(visit_count, last_visited_at)
-
-    # Should be 100 (within 4 hours)
-    assert_equal 100, score
+  def test_score_requires_an_injected_now
+    # Domain code never reads the clock; callers supply the current time.
+    assert_raises(ArgumentError) do
+      Frecency.score(1, @now - 3600)
+    end
   end
 
   # ========================================
