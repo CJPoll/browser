@@ -4,10 +4,10 @@ Orchestration between Repositories, Adapters, and Domain. See
 `adrs/001-six-bucket-architecture.md` for the bucket rules; this file records
 the conventions this directory follows.
 
-> Several files currently in this directory are misfiled (SQLite
-> pseudo-managers, pure logic, workers doing their own HTTP). The
-> six-bucket remediation plan relocates them; the conventions below describe
-> the target, not every file present today.
+> A few files in this directory are still misfiled (`favicon_manager.rb` and
+> `web_context_manager.rb` both reach straight into WebKit). The six-bucket
+> remediation plan relocates them; the conventions below describe the target,
+> not every file present today.
 
 ## Conventions
 
@@ -40,6 +40,43 @@ GLib::Timeout.add_seconds(DownloadCoordinator::CLEANUP_INTERVAL_SECONDS) do
   true # Keep repeating
 end
 ```
+
+## Background work: the unit of work is public, the thread is not
+
+`Managers::QueueMetadataWorker` runs on its own thread (unlike the periodic
+work above, it must not block the GTK main loop while a page is fetched). The
+thread is still not the interesting part, so the work it does is a public
+method and the thread merely calls it:
+
+```ruby
+def enqueue(entry_id, url) = @work_queue.push({ id: entry_id, url: url })
+
+# The unit of work `enqueue` schedules; public because it is the worker's
+# actual behaviour, and the thread is only how it gets run.
+def process(entry_id, url)
+```
+
+Every test of what the worker *does* calls `process` directly and is
+deterministic. One test per lifecycle guarantee (an enqueued item is picked
+up, one failure does not kill the loop, `stop` ends the thread) still uses the
+thread, with a polling loop. Before this split the tests reached in with
+`send(:fetch_metadata, ...)` -- the private-method `send` in a test is usually
+a sign that the object's real API is missing a name.
+
+**Injecting the main-thread scheduler** is what makes the callback testable at
+all, since nothing pumps the GTK main loop in a test process:
+
+```ruby
+MAIN_THREAD_SCHEDULER = lambda do |&block|
+  GLib::Idle.add { block.call; false }
+end
+
+def initialize(..., scheduler: MAIN_THREAD_SCHEDULER)
+```
+
+The test passes `->(&block) { scheduled << block }` and asserts both halves:
+that the callback was *handed to* the main thread rather than run on the
+worker thread, and that running it invokes the callback.
 
 ## A manager may default its own collaborators
 

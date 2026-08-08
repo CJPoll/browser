@@ -33,13 +33,14 @@ require_relative 'ui/autocomplete_popover'
 require_relative 'domain/media_permission_type'
 require_relative 'domain/oauth_popup'
 require_relative 'domain/url_classifier'
-require_relative 'managers/article_extractor_js'
+require_relative 'domain/article_extractor_js'
 require_relative 'managers/site_permission_manager'
 require_relative 'managers/history_manager'
 require_relative 'managers/autocomplete_manager'
 require_relative 'managers/download_coordinator'
 require_relative 'managers/queue_manager'
 require_relative 'managers/queue_navigation_manager'
+require_relative 'managers/queue_metadata_worker'
 require_relative 'managers/session_manager'
 require_relative 'managers/settings_manager'
 require_relative 'managers/external_opener'
@@ -71,7 +72,7 @@ class BrowserWindow < Gtk::Window
     @browser_restarter = Managers::BrowserRestarter.new(session_manager: @session_manager)
 
     # === Background Workers ===
-    @queue_metadata_worker = QueueMetadataWorker.new(@queue_manager)
+    @queue_metadata_worker = Managers::QueueMetadataWorker.new(@queue_manager)
     @queue_metadata_worker.on_metadata_fetched = -> {
       @sidebar_component.refresh_current_view if @sidebar_component.mode == :queue
     }
@@ -1429,7 +1430,7 @@ class BrowserWindow < Gtk::Window
 
     # Use JavaScript to extract article content directly in WebKit
     # This avoids GC conflicts between Nokogiri/libxml2 and GLib/librsvg
-    script = ArticleExtractorJS.extraction_script
+    script = Domain::ArticleExtractorJS.extraction_script
 
     webview = current_tab.webview
     webview.run_javascript(script, nil) do |source_object, async_result|

@@ -46,6 +46,24 @@ end
 - **`system` returns `nil` when the command is missing**, so coerce with `!!`
   before returning -- callers branch on true/false, not on nil.
 
+## HTTP: return the body, raise the failure
+
+`Adapters::HttpFetcher` answers with the response body, or nil when the server
+did not answer with success. It does **not** rescue network errors, because
+its three callers disagree about what a failure means: a page that cannot be
+fetched is warned about, a favicon that cannot be fetched is not, and an
+oEmbed lookup that fails still leaves an entry worth saving. Swallowing the
+exception here would take that decision away from the manager -- "no policy"
+applies to error handling too.
+
+The methods are named for what is being fetched rather than for HTTP verbs
+(`fetch_page`, `fetch_api`, `fetch_asset`), because that is what carries the
+differences: the browser User-Agent (sites serve different markup to scripts)
+and the shorter timeout for an asset the entry can do without.
+
+Parsing stays out. `fetch_api` returns the JSON body as a string;
+`Domain::PageMetadata` reads it. The adapter moves bytes.
+
 ## File-store adapters
 
 `Adapters::SessionStore` and `Adapters::SettingsStore` are the JSON
@@ -62,6 +80,13 @@ Two conventions hold them to that:
 
 Adapters that own a path default it (`DEFAULT_DIR`) and `mkdir_p` it in the
 constructor, so Framework never has to know or pass one.
+
+`Adapters::AutoTagRulesStore` is the read-only variant: it loads data that
+ships with the browser (`config/auto_tag_rules.json`) rather than user state.
+Same rules apply -- it returns the parsed data and nothing more, and a missing
+or malformed file warns and reads as "no rules" rather than stopping the
+browser from starting. Its test loads the *shipped* file as well as temporary
+ones, because a rules file that no longer parses is a silent loss of a feature.
 
 ## Why adapters exist as a separate bucket from repositories
 

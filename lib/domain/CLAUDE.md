@@ -43,6 +43,8 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::TagColor` | what colour is this tag drawn in? |
 | `Domain::SessionSnapshot` | which tabs are worth restoring, and which one is selected? |
 | `Domain::IpcMessage` | what is another instance asking this one to open? |
+| `Domain::PageMetadata` | what does this page say about itself? |
+| `Domain::AutoTagger` | which tags do the rules give this entry? |
 
 ## Presentation rules are Domain too
 
@@ -77,6 +79,39 @@ This is the same rule as "repositories map rows to Domain objects": the
 storage bucket handles bytes, Domain handles meaning. The difference is only
 that `to_h`/`from_h` sit on the Domain object here, because a JSON file (unlike
 a table) has no schema to keep them honest.
+
+## Fetching is an Adapter's job; making sense of the bytes is Domain's
+
+`Domain::PageMetadata` takes HTML (or a JSON body) that somebody else fetched
+and answers what the page's title is, where its favicon lives, and what the
+embedded JSON-LD says about a video. Splitting there is what makes the odd
+cases cheap to cover -- a Latin-1 title, a page whose only JSON-LD is
+malformed, an `uploadDate` of `"last tuesday"` -- none of which need a network
+stub.
+
+Two conventions came out of it:
+
+- **Never return nil where the caller would only have to invent a fallback.**
+  `favicon_url` falls back to `/favicon.ico` itself, because "there is no
+  icon link" and "the icon is at the conventional path" are the same decision,
+  and it was previously spelled out at the call site.
+- **Raise on input that is simply unusable**, and let the caller decide
+  whether that deserves a warning. `youtube_metadata_from_oembed` lets
+  `JSON::ParserError` out (the manager warns and carries on) but returns nil
+  for a well-formed response that names neither title nor channel. Malformed
+  is an accident; empty is an answer.
+
+## Rules that change often are data, not code
+
+The auto-tagging rules -- which channels and keywords earn which tag -- live in
+`config/auto_tag_rules.json` and reach `Domain::AutoTagger.from_rules` through
+`Adapters::AutoTagRulesStore`. Domain owns *how* a rule matches; the file owns
+*which* rules exist.
+
+`from_rules` accepts string or symbol keys, so a test writes a literal and
+production passes parsed JSON through the same constructor. It uses `fetch`
+for the required fields, so a rule missing its `fields` raises at load rather
+than silently never matching.
 
 ## Return a decision, not a side effect
 

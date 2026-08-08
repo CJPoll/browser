@@ -1,0 +1,81 @@
+{
+  "rules": [
+    {
+      "tag_name": "ASMR",
+      "patterns": ["asmr"],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Gaming",
+      "patterns": [
+        "gaming",
+        "video game",
+        "video games",
+        "steam sale",
+        "playthrough",
+        "gameplay",
+        "let's play",
+        "silksong",
+        "terraria",
+        "azaxe",
+        "game maker's toolkit",
+        "adam millard"
+      ],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Silksong",
+      "patterns": ["silksong"],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Terraria",
+      "patterns": ["terraria"],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Smash Bros",
+      "patterns": ["smash", "azaxe"],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Game Design",
+      "patterns": ["game maker's toolkit", "adam millard", "game design"],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Linux",
+      "patterns": ["linux"],
+      "fields": ["title", "channel"],
+      "site": "youtube.com"
+    },
+    {
+      "tag_name": "Tech",
+      "patterns": [
+        "apple",
+        "microsoft",
+        "steam",
+        "framework",
+        "laptop",
+        "steam deck",
+        "window manager",
+        "arch",
+        "gentoo",
+        "ubuntu",
+        "red hat",
+        "redhat",
+        "operating system",
+        "linux",
+        "aws"
+      ],
+      "fields": ["title"],
+      "site": "youtube.com"
+    }
+  ]
+}
