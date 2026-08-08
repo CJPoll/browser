@@ -1,55 +1,39 @@
-require 'json'
-require 'fileutils'
+# frozen_string_literal: true
 
-# Manages browser session persistence (tab URLs and current tab index)
-class SessionManager
-  # @param data_dir [String] Directory where session.json is stored
-  def initialize(data_dir: nil)
-    @data_dir = data_dir || File.join(Dir.home, '.local/share/toy-browser')
-    @session_file = File.join(@data_dir, 'session.json')
+require_relative '../adapters/session_store'
+require_relative '../domain/session_snapshot'
 
-    FileUtils.mkdir_p(@data_dir)
-  end
-
-  # Save current session to disk
-  # @param tab_urls [Array<String>] Array of tab URLs to save
-  # @param current_tab_index [Integer] Index of currently active tab
-  # @return [void]
-  def save_session(tab_urls, current_tab_index)
-    session = {
-      'tabs' => tab_urls,
-      'current_tab_index' => current_tab_index
-    }
-
-    begin
-      File.write(@session_file, JSON.pretty_generate(session))
-    rescue => e
-      puts "Failed to save session: #{e.message}"
-    end
-  end
-
-  # Load session from disk and delete the session file
-  # @return [Hash, nil] Session data with 'tabs' and 'current_tab_index', or nil if no session
-  def load_session
-    if File.exist?(@session_file)
-      begin
-        session = JSON.parse(File.read(@session_file))
-
-        # Delete session file after loading
-        File.delete(@session_file)
-
-        return session
-      rescue => e
-        puts "Failed to load session: #{e.message}"
-      end
+module Managers
+  # Carries a window's open tabs across a restart.
+  #
+  # The window hands over what its tabs currently are;
+  # `Domain::SessionSnapshot` decides which of them are worth restoring and
+  # which one should be selected, and `Adapters::SessionStore` holds the
+  # result until the next window asks for it.
+  class SessionManager
+    # @param store [Adapters::SessionStore] Where the session is kept
+    def initialize(store: Adapters::SessionStore.new)
+      @store = store
     end
 
-    nil
-  end
+    # Saves the window's tabs for the next launch
+    #
+    # @param tab_uris [Array<String, nil>] Each tab's URI, in tab order
+    # @param current_tab_index [Integer, nil] Index of the active tab
+    # @return [Domain::SessionSnapshot] What was saved
+    def save(tab_uris, current_tab_index)
+      snapshot = Domain::SessionSnapshot.build(tab_uris, current_tab_index)
+      @store.save(snapshot.to_h)
+      snapshot
+    end
 
-  # Check if a session file exists
-  # @return [Boolean]
-  def session_exists?
-    File.exist?(@session_file)
+    # Takes the saved session, if there is one
+    #
+    # The session is consumed: a second call returns nothing.
+    #
+    # @return [Domain::SessionSnapshot, nil] Tabs to reopen, or nil
+    def restore
+      Domain::SessionSnapshot.from_h(@store.load)
+    end
   end
 end

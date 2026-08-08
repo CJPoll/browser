@@ -15,8 +15,8 @@
 # - Keyboard: KeyboardHandler
 # - Mouse: MouseHandler
 # - Favicon: FaviconManager
-# - Settings: SettingsManager
-# - Session: SessionManager
+# - Settings: Managers::SettingsManager
+# - Session: Managers::SessionManager
 # - Queue metadata: QueueMetadataWorker
 
 require 'gtk3'
@@ -40,6 +40,10 @@ require_relative 'managers/autocomplete_manager'
 require_relative 'managers/download_coordinator'
 require_relative 'managers/queue_manager'
 require_relative 'managers/queue_navigation_manager'
+require_relative 'managers/session_manager'
+require_relative 'managers/settings_manager'
+require_relative 'managers/external_opener'
+require_relative 'managers/browser_restarter'
 require_relative 'handlers/download_handler'
 require_relative 'handlers/markdown_handler'
 require_relative 'pdf_bookmark_processor'
@@ -61,8 +65,10 @@ class BrowserWindow < Gtk::Window
     @queue_navigation_manager = Managers::QueueNavigationManager.new(@queue_manager)
     @download_coordinator = DownloadCoordinator.new
     @site_permission_manager = Managers::SitePermissionManager.new
-    @settings_manager = SettingsManager.new(data_dir: @data_dir)
-    @session_manager = SessionManager.new(data_dir: @data_dir)
+    @settings_manager = Managers::SettingsManager.new
+    @session_manager = Managers::SessionManager.new
+    @external_opener = Managers::ExternalOpener.new
+    @browser_restarter = Managers::BrowserRestarter.new(session_manager: @session_manager)
 
     # === Background Workers ===
     @queue_metadata_worker = QueueMetadataWorker.new(@queue_manager)
@@ -261,7 +267,7 @@ class BrowserWindow < Gtk::Window
       on_remove: ->(download_id) { @download_coordinator.delete_download(download_id); update_download_badge },
       on_open_location: ->(destination) {
         # Open file manager at the download location
-        system("xdg-open", File.dirname(destination))
+        @external_opener.open_containing_directory(destination)
       }
     )
 
@@ -333,7 +339,7 @@ class BrowserWindow < Gtk::Window
 
     # Save settings when window is closing
     signal_connect("delete-event") do
-      @settings_manager.save_settings
+      @settings_manager.save
       false  # Allow the window to close
     end
 
@@ -373,17 +379,15 @@ class BrowserWindow < Gtk::Window
 
     # Restore session if available, otherwise create initial tab
     # Command-line URLs are handled by BrowserApplication after window creation
-    session = @session_manager.load_session
-    if session && session['tabs'] && !session['tabs'].empty?
+    session = @session_manager.restore
+    if session
       # Restore tabs from session
-      session['tabs'].each do |tab_url|
+      session.tab_urls.each do |tab_url|
         create_new_tab(tab_url)
       end
 
-      # Restore current tab index
-      if session['current_tab_index'] && session['current_tab_index'] < @tabs.length
-        switch_to_tab(session['current_tab_index'])
-      end
+      # Restore the tab the user was on
+      switch_to_tab(session.current_tab_index)
     else
       # Create initial tab
       create_new_tab("https://www.example.com")
@@ -413,7 +417,7 @@ class BrowserWindow < Gtk::Window
 
       # Save session and settings
       save_current_session
-      @settings_manager.save_settings
+      @settings_manager.save
     end
 
     # Keyboard handler
@@ -1324,7 +1328,7 @@ class BrowserWindow < Gtk::Window
     gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
 
     # Save settings
-    @settings_manager.save_settings
+    @settings_manager.save
 
     puts @dark_mode ? "Moon Dark mode enabled" : "Sun Light mode enabled"
   end
@@ -1732,12 +1736,9 @@ class BrowserWindow < Gtk::Window
   def reload_browser
     puts "Reloading browser with latest code..."
 
-    # Save current session (tab URLs)
-    save_current_session
-
-    # Spawn a new browser process with the same script
-    script_path = File.expand_path($PROGRAM_NAME)
-    spawn("ruby", script_path)
+    # Saves the open tabs, then starts a replacement process from the same
+    # script; the new process restores the session this one leaves behind.
+    @browser_restarter.restart(@tabs.map(&:uri), @current_tab_index, File.expand_path($PROGRAM_NAME))
 
     # Close this window (will quit the application)
     close
@@ -1745,9 +1746,9 @@ class BrowserWindow < Gtk::Window
 
   # Helper method to save current session (private - only called internally)
   private def save_current_session
-    # Collect all tab URLs
-    tab_urls = @tabs.map { |tab| tab.uri || "https://www.google.com" }
-    @session_manager.save_session(tab_urls, @current_tab_index)
+    # A tab with no URI is skipped rather than saved as an invented URL;
+    # Domain::SessionSnapshot decides what is worth restoring.
+    @session_manager.save(@tabs.map(&:uri), @current_tab_index)
   end
 
   # ========================================
@@ -2018,10 +2019,10 @@ class BrowserWindow < Gtk::Window
   def show_download_complete_notification(filename, filepath)
     notification_bar = DownloadNotificationBar.new(
       on_open: ->(path) {
-        system("xdg-open", path)
+        @external_opener.open_path(path)
       },
       on_show_folder: ->(path) {
-        system("xdg-open", File.dirname(path))
+        @external_opener.open_containing_directory(path)
       },
       on_dismiss: -> {
         # Nothing to do

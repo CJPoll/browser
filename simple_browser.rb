@@ -2,7 +2,7 @@
 # Toy Browser - GTK3-based web browser with queue management
 # Entry point: Creates BrowserApplication and starts GTK main loop
 
-require 'fileutils'
+require_relative 'lib/managers/ipc_manager'
 
 # Capture ARGV before GTK Application consumes it
 ORIGINAL_ARGV = ARGV.dup
@@ -10,18 +10,14 @@ ORIGINAL_ARGV = ARGV.dup
 # Parse --new-window flag
 NEW_WINDOW_FLAG = ORIGINAL_ARGV.delete('--new-window') ? true : false
 
-# IPC file for passing URLs between instances
-IPC_DIR = File.join(Dir.home, '.local/share/toy-browser')
-FileUtils.mkdir_p(IPC_DIR)
-IPC_URL_FILE = File.join(IPC_DIR, 'pending-url')
-
-# Write URL to IPC file for the primary instance to pick up
-# This works for both first launch and subsequent launches
+# Publish the requested URL for the primary instance to pick up.
+# This works for both first launch and subsequent launches: if no browser is
+# running yet, the window this process creates reads its own request.
 if ORIGINAL_ARGV.length > 0 && !ORIGINAL_ARGV[0].empty?
-  File.write(IPC_URL_FILE, "#{ORIGINAL_ARGV[0]}\n#{Time.now.to_f}\n#{NEW_WINDOW_FLAG}")
+  Managers::IpcManager.new.publish(url: ORIGINAL_ARGV[0], new_window: NEW_WINDOW_FLAG)
 elsif NEW_WINDOW_FLAG
   # --new-window without URL - open blank window
-  File.write(IPC_URL_FILE, "\n#{Time.now.to_f}\n#{NEW_WINDOW_FLAG}")
+  Managers::IpcManager.new.publish(new_window: true)
 end
 
 require 'gtk3'
@@ -32,8 +28,6 @@ require 'net/http'
 require 'uri'
 require_relative 'video_popout_window'
 require_relative 'lib/managers/web_context_manager'
-require_relative 'lib/managers/settings_manager'
-require_relative 'lib/managers/session_manager'
 require_relative 'lib/managers/queue_metadata_worker'
 require_relative 'lib/managers/favicon_manager'
 require_relative 'lib/tab'

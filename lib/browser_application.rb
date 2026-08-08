@@ -1,19 +1,17 @@
 require 'gtk3'
+require_relative 'managers/ipc_manager'
 
 # GTK Application managing browser lifecycle and single-instance behavior
 class BrowserApplication < Gtk::Application
-  # IPC file for passing URLs between instances
-  IPC_DIR = File.join(Dir.home, '.local/share/toy-browser')
-  IPC_URL_FILE = File.join(IPC_DIR, 'pending-url')
-
   # Creates a new browser application
   def initialize
     super("com.example.browser", Gio::ApplicationFlags::HANDLES_OPEN | Gio::ApplicationFlags::HANDLES_COMMAND_LINE)
 
     @main_window = nil
     @windows = []  # Track all windows for cleanup
-    # Set to 0 so we process any IPC file written before app started
-    @last_ipc_check = 0
+    # Requests from other instances arrive through this manager, which also
+    # remembers which ones have already been acted on
+    @ipc_manager = Managers::IpcManager.new
 
     # Set up signal handlers
     setup_signals
@@ -58,47 +56,41 @@ class BrowserApplication < Gtk::Application
     end
   end
 
-  # Process the IPC file if it exists and is newer than last check
+  # Acts on a request from another instance, if one is waiting
   #
   # @return [void]
   def process_ipc_file
-    return unless File.exist?(IPC_URL_FILE)
+    request = @ipc_manager.take_pending_request
+    return unless request
 
-    begin
-      content = File.read(IPC_URL_FILE)
-      parts = content.split("\n")
-      url = parts[0]
-      timestamp = parts[1].to_f
-      new_window = parts[2] == "true"
-
-      # Only process if this is a new request (timestamp after last check)
-      return unless timestamp > @last_ipc_check
-
-      if new_window
-        # Create a new window
-        window = create_window(url.empty? ? nil : url)
-        window.show_all
-        window.present
-      elsif url && !url.empty?
-        # Open URL in existing window
-        tabs = @main_window.instance_variable_get(:@tabs)
-        first_tab_uri = tabs.first&.uri
-
-        # If first tab is example.com (default), navigate it instead of creating new tab
-        if first_tab_uri == "https://www.example.com/" || first_tab_uri == "https://www.example.com"
-          tabs.first.webview.load_uri(url)
-        else
-          @main_window.create_new_tab(url)
-        end
-        @main_window.present
-      end
-
-      @last_ipc_check = timestamp
-      # Delete the file after processing
-      File.delete(IPC_URL_FILE)
-    rescue => e
-      warn "Error reading IPC file: #{e.message}"
+    if request.new_window?
+      # Create a new window
+      window = create_window(request.url? ? request.url : nil)
+      window.show_all
+      window.present
+    elsif request.url?
+      # Open URL in existing window
+      open_in_main_window(request.url)
     end
+  rescue => e
+    warn "Error handling IPC request: #{e.message}"
+  end
+
+  # Opens a URL in the window that is already up
+  #
+  # @param url [String] URL to open
+  # @return [void]
+  def open_in_main_window(url)
+    tabs = @main_window.instance_variable_get(:@tabs)
+    first_tab_uri = tabs.first&.uri
+
+    # If first tab is example.com (default), navigate it instead of creating new tab
+    if first_tab_uri == "https://www.example.com/" || first_tab_uri == "https://www.example.com"
+      tabs.first.webview.load_uri(url)
+    else
+      @main_window.create_new_tab(url)
+    end
+    @main_window.present
   end
 
   # Creates a new browser window and tracks it

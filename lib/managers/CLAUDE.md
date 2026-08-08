@@ -82,6 +82,46 @@ before it reaches a repository: `allow_media` checks
 `Domain::MediaPermissionType.valid?` so an unknown type cannot land in the
 table as an unrevokable row.
 
+## A thin manager over a single adapter is still worth having
+
+Framework must not call an Adapter, so an effect with no rules around it --
+handing a `spotify://` URI to the desktop -- still needs a manager in front of
+it. Keep the wrapper honest rather than ceremonial:
+
+- **Name the methods after what the caller has.** `ExternalOpener` exposes
+  `open_uri`, `open_path` and `open_containing_directory` over one adapter
+  method, so no caller has to work out whether it should be passing a URI, a
+  file, or the folder a file is in. `open_containing_directory` is where
+  `File.dirname` lives -- previously written out at all three call sites.
+- **The decision to act belongs to the manager**, so the "nothing to open"
+  guard lives there and is tested with a dumb mock. The adapter keeps its own
+  guard as protection against a nil reaching `system`, tested separately.
+- **Let it grow into the seam it will need.** `Managers::BrowserRestarter`
+  wraps one launch, but it also fixes the order (save the session, *then*
+  start the replacement) that used to be spelled out in `BrowserWindow`.
+
+## The Framework's watermark belongs to the manager
+
+`BrowserApplication` used to carry `@last_ipc_check` and compare timestamps
+itself, which meant the rule "act on a request exactly once" lived in a GTK
+timer callback. `Managers::IpcManager` owns it now:
+
+```ruby
+def take_pending_request
+  message = @ipc_file.read
+  return nil unless message&.newer_than?(@watermark)
+
+  @watermark = message.timestamp
+  @ipc_file.delete
+  message
+end
+```
+
+The method name is the contract -- *take*, not *read*: the caller gets each
+request once, and does not have to remember to clear anything. The same
+manager also publishes (a second invocation calls `publish` and exits), so
+both ends of the exchange, and the message format, stay in one place.
+
 ## Managers own the clock
 
 Domain never reads the clock (see `lib/domain/CLAUDE.md`), so the manager that

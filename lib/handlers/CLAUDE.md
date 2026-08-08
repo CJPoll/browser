@@ -14,6 +14,21 @@ the conventions this directory follows.
 - The framework objects (WebKit downloads, GTK events) stop here. Domain
   objects go out; WebKit objects never reach a UI Component or a Manager.
 
+## Managers arrive as keywords, callbacks as the hash
+
+`MouseHandler` and `NavigationHandler` take their callback hash positionally
+and their collaborators as keywords with a production default:
+
+```ruby
+def initialize(callbacks, external_opener: Managers::ExternalOpener.new)
+```
+
+The callback hash is what the owner wires up (which tab is current, how to
+open a new one); a manager is a collaborator the handler needs regardless of
+who owns it. Keeping them apart means a new collaborator does not become
+another key every caller has to remember to pass, and a test can substitute
+just the one it cares about.
+
 ## Signals you provoke yourself
 
 WebKit reports a cancelled transfer as a *failure*, so any handler that

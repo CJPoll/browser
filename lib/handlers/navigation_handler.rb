@@ -1,6 +1,7 @@
 require 'uri'
 require_relative '../domain/external_schemes'
 require_relative '../domain/url_classifier'
+require_relative '../managers/external_opener'
 
 # Handles URL navigation logic (parsing, search detection)
 #
@@ -13,10 +14,13 @@ class NavigationHandler
   #   - :get_current_tab => -> { Tab or nil }
   #   - :in_zen_mode => -> { true/false }
   #   - :get_toolbar => -> { Gtk::Box toolbar widget }
+  # @param external_opener [Managers::ExternalOpener] Opens URIs that belong
+  #   to another application
   # @raise [ArgumentError] if required callbacks are missing
-  def initialize(callbacks)
+  def initialize(callbacks, external_opener: Managers::ExternalOpener.new)
     validate_callbacks(callbacks)
     @callbacks = callbacks
+    @external_opener = external_opener
   end
 
   # Navigates to the given URL or search query
@@ -30,7 +34,7 @@ class NavigationHandler
 
     # Check for external URL schemes that should be handled by the system
     if Domain::ExternalSchemes.external?(text_stripped)
-      system("xdg-open", text_stripped)
+      @external_opener.open_uri(text_stripped)
       return
     end
 

@@ -1,5 +1,6 @@
 require 'gtk3'
 require_relative '../domain/external_schemes'
+require_relative '../managers/external_opener'
 
 # Handles mouse button events (back/forward navigation, Ctrl+Click)
 #
@@ -12,10 +13,13 @@ class MouseHandler
   #   - :get_current_tab => -> { Tab or nil }
   #   - :create_new_tab => ->(uri, switch_to:) { creates tab }
   #   - :handle_markdown_navigation => ->(webview, uri) { true if handled } (optional)
+  # @param external_opener [Managers::ExternalOpener] Opens URIs that belong
+  #   to another application
   # @raise [ArgumentError] if required callbacks are missing
-  def initialize(callbacks)
+  def initialize(callbacks, external_opener: Managers::ExternalOpener.new)
     validate_callbacks(callbacks)
     @callbacks = callbacks
+    @external_opener = external_opener
   end
 
   # Handles button-press-event for back/forward mouse buttons
@@ -77,7 +81,7 @@ class MouseHandler
     # Check for external URL schemes that should be handled by the system
     if Domain::ExternalSchemes.external?(uri)
       decision.ignore
-      system("xdg-open", uri)
+      @external_opener.open_uri(uri)
       return true
     end
 

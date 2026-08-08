@@ -41,6 +41,8 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::QueueTraversal` | which queue entry comes next from here? |
 | `Domain::QueueSort` | what order does the sidebar show the queue in? |
 | `Domain::TagColor` | what colour is this tag drawn in? |
+| `Domain::SessionSnapshot` | which tabs are worth restoring, and which one is selected? |
+| `Domain::IpcMessage` | what is another instance asking this one to open? |
 
 ## Presentation rules are Domain too
 
@@ -54,6 +56,27 @@ other exists.
 The line to hold is *layout stays in the widget*. `TagColor.rgb` returns
 `[r, g, b]`, not a `Gdk::RGBA` -- the moment Domain names a GTK type it has
 stopped being a rule and started being a widget.
+
+## The wire format is Domain; reading the file is not
+
+`Domain::IpcMessage` owns `parse`/`serialize` for the file two browser
+instances talk through, and `Domain::SessionSnapshot` owns `from_h`/`to_h` for
+the session file. The adapter underneath does nothing but move bytes.
+
+Two things follow from splitting it there:
+
+- The parser must **never raise**, because the file it reads can be
+  half-written. A truncated message parses to one with a zero timestamp, which
+  no watermark will accept -- an invalid input becomes a value that is
+  harmless downstream, rather than an exception the Framework has to catch.
+- Round-tripping is a one-line test (`assert_equal message, parse(serialize)`)
+  with no filesystem in it, which is what makes covering the odd shapes --
+  a request with no URL, a session with no tabs -- cheap enough to bother.
+
+This is the same rule as "repositories map rows to Domain objects": the
+storage bucket handles bytes, Domain handles meaning. The difference is only
+that `to_h`/`from_h` sit on the Domain object here, because a JSON file (unlike
+a table) has no schema to keep them honest.
 
 ## Return a decision, not a side effect
 

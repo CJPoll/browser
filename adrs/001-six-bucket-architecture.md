@@ -133,12 +133,26 @@ Current classes that already conform:
 | `lib/repositories/history_repository.rb` | Repositories |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
 | `lib/adapters/file_system.rb` | Adapters |
+| `lib/adapters/uri_opener.rb` | Adapters (`xdg-open`) |
+| `lib/adapters/system_notifier.rb` | Adapters (`notify-send`) |
+| `lib/adapters/process_launcher.rb` | Adapters (spawns the replacement browser) |
+| `lib/adapters/ipc_file.rb` | Adapters (the `pending-url` hand-off file) |
+| `lib/adapters/session_store.rb` | Adapters (JSON file store) |
+| `lib/adapters/settings_store.rb` | Adapters (JSON file store) |
 | `lib/managers/autocomplete_manager.rb` | Managers |
 | `lib/managers/download_coordinator.rb` | Managers |
 | `lib/managers/site_permission_manager.rb` | Managers |
 | `lib/managers/queue_manager.rb` | Managers |
 | `lib/managers/queue_navigation_manager.rb` | Managers |
 | `lib/managers/history_manager.rb` | Managers |
+| `lib/managers/session_manager.rb` | Managers (snapshot policy over the session store) |
+| `lib/managers/settings_manager.rb` | Managers (preference values over the settings store) |
+| `lib/managers/external_opener.rb` | Managers |
+| `lib/managers/ipc_manager.rb` | Managers (owns the act-once watermark) |
+| `lib/managers/browser_restarter.rb` | Managers |
+| `lib/handlers/mouse_handler.rb` | Framework (GTK/WebKit events -> Manager) |
+| `lib/handlers/navigation_handler.rb` | Framework (URL bar -> Manager) |
+| `lib/browser_application.rb` | Framework (GTK lifecycle; IPC through `Managers::IpcManager`) |
 | `lib/handlers/download_handler.rb` | Framework (WebKit signals -> Manager) |
 | `lib/ui/download_list_view.rb` | UI (data in, intent callbacks out) |
 | `lib/ui/site_permissions_window.rb` | UI (data in, intent callbacks out) |
@@ -147,6 +161,8 @@ Current classes that already conform:
 | `lib/ui/tag_edit_dialog.rb` | UI (data in, intent callbacks out) |
 | `lib/domain/queue_sort.rb` | Domain (conforms) |
 | `lib/domain/tag_color.rb` | Domain (conforms) |
+| `lib/domain/session_snapshot.rb` | Domain (conforms) |
+| `lib/domain/ipc_message.rb` | Domain (conforms -- `timestamp` supplied by the caller) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are
@@ -158,8 +174,6 @@ different tables with different semantics:
 | `history_manager.rb` (root) | Deleted -- superseded by `Repositories::HistoryRepository` (`sites`, `pages`, `visits`) plus `Managers::HistoryManager`, which owns the clock and the visit-deduplication policy and resolves authorities via `Domain::UrlHost` |
 | `queue_manager.rb` (root) | Deleted -- superseded by `Repositories::QueueRepository` + `Repositories::TagRepository` over a shared `Repositories::QueueDatabase`, plus `Managers::QueueManager` and `Managers::QueueNavigationManager` |
 | `download_manager.rb` (root) | Deleted -- superseded by `Repositories::DownloadRepository` + `DownloadCoordinator`, wired in through `DownloadHandler` |
-| `lib/managers/session_manager.rb` | Adapters (JSON file store, not a database) |
-| `lib/managers/settings_manager.rb` | Adapters (JSON file store, not a database) |
 | `lib/managers/auto_tagger.rb` | Domain (already pure) |
 | `lib/managers/article_extractor_js.rb` | Domain (constant script module, already pure) |
 
@@ -228,6 +242,8 @@ class UI::QueueListView
 end
 
 # BAD: Framework performing side effects inline
+# (`Adapters::SystemNotifier` now owns notify-send, `Adapters::UriOpener`
+# owns xdg-open, and Framework reaches them through a Manager)
 class BrowserWindow
   def handle_web_notification(title, body)
     system("notify-send", title, body)      # belongs in an Adapter

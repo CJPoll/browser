@@ -1,54 +1,38 @@
-require 'json'
-require 'fileutils'
+# frozen_string_literal: true
 
-# Manages persistent browser settings (dark mode, etc.)
-class SettingsManager
-  attr_accessor :dark_mode
+require_relative '../adapters/settings_store'
 
-  # @param data_dir [String] Directory where settings.json is stored
-  def initialize(data_dir: nil)
-    @data_dir = data_dir || File.join(Dir.home, '.local/share/toy-browser')
-    @settings_file = File.join(@data_dir, 'settings.json')
+module Managers
+  # The browser's persistent preferences.
+  #
+  # Holds the current values in memory so the window can read them without
+  # touching disk, and writes them back through `Adapters::SettingsStore` when
+  # asked. Toggling and saving are separate steps: a temporary override, like
+  # zen mode dimming the chrome, must not become the stored preference.
+  class SettingsManager
+    DARK_MODE_KEY = 'dark_mode'
 
-    FileUtils.mkdir_p(@data_dir)
+    # @return [Boolean] Whether dark mode is on
+    attr_reader :dark_mode
 
-    # Default settings
-    @dark_mode = false
-
-    load_settings
-  end
-
-  # Load settings from disk
-  # @return [void]
-  def load_settings
-    if File.exist?(@settings_file)
-      begin
-        settings = JSON.parse(File.read(@settings_file))
-        @dark_mode = settings['dark_mode'] || false
-      rescue => e
-        puts "Failed to load settings: #{e.message}"
-      end
+    # @param store [Adapters::SettingsStore] Where the settings are kept
+    def initialize(store: Adapters::SettingsStore.new)
+      @store = store
+      @dark_mode = @store.load[DARK_MODE_KEY] ? true : false
     end
-  end
 
-  # Save settings to disk
-  # @return [void]
-  def save_settings
-    settings = {
-      'dark_mode' => @dark_mode
-    }
-
-    begin
-      File.write(@settings_file, JSON.pretty_generate(settings))
-    rescue => e
-      puts "Failed to save settings: #{e.message}"
+    # Flips dark mode
+    #
+    # @return [Boolean] The new value
+    def toggle_dark_mode
+      @dark_mode = !@dark_mode
     end
-  end
 
-  # Toggle dark mode setting
-  # @return [Boolean] New dark mode value
-  def toggle_dark_mode
-    @dark_mode = !@dark_mode
-    @dark_mode
+    # Writes the current settings
+    #
+    # @return [Boolean] True if they were written
+    def save
+      @store.save(DARK_MODE_KEY => @dark_mode)
+    end
   end
 end
