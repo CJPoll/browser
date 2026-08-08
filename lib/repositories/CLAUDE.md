@@ -87,3 +87,66 @@ Tests live in `test/repositories/`, mirroring this directory.
 Timestamps are stored as integer Unix seconds. Private `to_timestamp` /
 `from_timestamp` helpers convert at the boundary so Domain objects always see
 `Time` instances.
+
+## Two repositories, one database file
+
+`queue.db` holds `queue_entries` on one side and `tags` +
+`queue_entry_tag_assignments` on the other. They are separate concerns, so
+they are separate repositories -- but they are one file, one transaction
+scope, and one schema history, so they share one connection object:
+
+```ruby
+database = Repositories::QueueDatabase.new
+Repositories::QueueRepository.new(database)
+Repositories::TagRepository.new(database)
+```
+
+`QueueDatabase` owns what belongs to the *file* rather than to a table:
+connecting, the pragmas, the lock, and the schema including migrations. That
+last part is not a compromise -- the v1 -> v2 migration creates the tag tables
+*and* adds `queue_entries.date` in one transaction, so no single repository
+could own it. It exposes `execute`/`get_first_row`/`get_first_value`/
+`transaction`/`synchronize`; every SQL string still lives in the repository
+whose table it touches.
+
+Prefer this over `SqliteConnection` when repositories share a file;
+`SqliteConnection` is for the one-repository-one-file case.
+
+## Repositories do not join across each other's tables
+
+`TagRepository#entry_ids_with_all_tags` returns entry **ids**, and the
+manager passes them to `QueueRepository#find_all_by_ids`. The single joined
+query would have been shorter, but it would have put `queue_entries` SQL and
+a second copy of the row -> `QueueEntry` mapping inside the tag repository.
+Two queries and one owner per table is the trade this codebase takes.
+
+## Locking: a reentrant Monitor, held across read-then-write
+
+The queue is written from the metadata worker's background thread as well as
+the GTK main loop. `QueueDatabase#synchronize` uses a `Monitor` (reentrant),
+which is what lets a repository wrap a whole read-then-write sequence without
+deadlocking on the nested calls inside it:
+
+```ruby
+def unassign(entry_id, tag_id)
+  @database.synchronize do
+    @database.execute('DELETE FROM ...', [entry_id, tag_id])
+    @database.changes > 0          # meaningless if another thread got in between
+  end
+end
+```
+
+`changes` and `last_insert_row_id` are only meaningful inside the block that
+produced them. Same for a find-then-delete: take the lock around both.
+
+## Gotcha: `SQLite3::Database#transaction` returns true, not your block
+
+```ruby
+stored = nil
+@database.transaction { stored = entry.with(id: ..., position: ...) }
+stored   # <- the block's value has to come out through a local
+```
+
+The gem's `transaction` ends in `abort and rollback or commit`, so its value
+is the commit, not the block. Returning directly from `transaction` silently
+yields `true` -- which reads as success and loses the record.

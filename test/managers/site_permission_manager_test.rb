@@ -1,5 +1,6 @@
 require 'minitest/autorun'
 require_relative '../../lib/managers/site_permission_manager'
+require_relative '../support/test_clock'
 
 # Stands in for the three host-keyed permission repositories.
 class MockHostPermissionRepository
@@ -81,21 +82,6 @@ class MockMediaPermissionRepository
 
   def all
     @permissions.values.sort_by(&:host)
-  end
-end
-
-class TestClock
-  def initialize(time)
-    @time = time
-  end
-
-  def call
-    @time
-  end
-
-  def advance(seconds)
-    @time += seconds
-    self
   end
 end
 

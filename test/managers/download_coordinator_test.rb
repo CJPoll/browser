@@ -1,6 +1,7 @@
 require 'minitest/autorun'
 require 'fileutils'
 require_relative '../../lib/domain/download'
+require_relative '../support/test_clock'
 
 # Mock repository for testing
 class MockDownloadRepository
@@ -57,22 +58,6 @@ class MockFileSystem
 
   def exist?(path)
     @existing.include?(path)
-  end
-end
-
-# Controllable clock so timestamps written by the coordinator are assertable.
-class TestClock
-  def initialize(start)
-    @time = start
-  end
-
-  def call
-    @time
-  end
-
-  def advance(seconds)
-    @time += seconds
-    self
   end
 end
 

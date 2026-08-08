@@ -10,7 +10,7 @@ class QueueEntryContextMenuTest < Minitest::Test
 
     # Create temporary queue database
     temp_db = Tempfile.new(['queue_test', '.db'])
-    queue_manager = QueueManager.new(temp_db.path)
+    queue_manager = create_queue_manager(temp_db.path)
     temp_db.close
 
     # Add entry to queue
@@ -26,11 +26,10 @@ class QueueEntryContextMenuTest < Minitest::Test
 
     # Verify entry exists
     assert_not_nil entry, "Entry should exist in queue"
-    assert_equal url, entry['url']
+    assert_equal url, entry.url
 
     # Cleanup
-    db = queue_manager.instance_variable_get(:@db)
-    db.close unless db.closed?
+    queue_manager.close
     File.delete(temp_db.path) if File.exist?(temp_db.path)
   end
 end

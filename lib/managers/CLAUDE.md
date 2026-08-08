@@ -108,23 +108,12 @@ Conventions: the keyword is `clock:`, the default is `-> { Time.now }`, and
 the object only needs to respond to `#call`. Call `@clock.call` at the point
 of use rather than caching it, so long-lived managers do not freeze time.
 
-Tests inject a controllable clock and assert exact timestamps:
+Tests inject a controllable clock and assert exact timestamps. `TestClock`
+lives in `test/support/test_clock.rb` -- require it, do not redeclare it (three
+copies at top level made `ruby -w` shout about redefined methods):
 
 ```ruby
-class TestClock
-  def initialize(start)
-    @time = start
-  end
-
-  def call
-    @time
-  end
-
-  def advance(seconds)
-    @time += seconds
-    self
-  end
-end
+require_relative '../support/test_clock'
 
 @clock = TestClock.new(Time.at(1_700_000_000))
 @coordinator = DownloadCoordinator.new(@repository, clock: @clock)
@@ -134,3 +123,59 @@ assert_equal Time.at(1_700_000_090), @coordinator.mark_completed(id).completed_a
 
 **Never** use `Process.sleep`/`sleep` to make time pass in a test -- advance
 the injected clock.
+
+## A manager may drive another manager
+
+`Managers::QueueNavigationManager` takes `Managers::QueueManager`, not the
+queue repositories. Traversal is a use case *on top of* the queue, so it goes
+through the queue's public API and inherits its validation rather than
+re-wiring two repositories and a clock.
+
+The rule this follows: reach for a second manager when the thing you need is
+already a use case; reach for a repository when you need storage that no
+manager exposes. A manager that wires up another manager's repositories is
+the shape to avoid -- it means the first manager's rules can be bypassed.
+
+## Fetch the state, let Domain decide, apply the decision
+
+The manager's body should read as three steps with no branching of its own:
+
+```ruby
+def next_entry(current_url)
+  Domain::QueueTraversal.next_after(@queue_manager.all, current_url)
+end
+```
+
+Wrap-around, "what does next mean when the current page is not in the queue",
+and exact-vs-loose URL matching are all rules, so they are in Domain and get
+exhaustive tests without a database. What is left here is the fetch. When a
+manager method grows an `if`, ask which Domain module the condition belongs
+to.
+
+## Constructor: production default, plus a seam for mocks
+
+Managers default their own collaborators so Framework never names a
+repository (see above). When a manager owns *several* repositories over a
+shared resource, keep both doors open:
+
+```ruby
+def initialize(database: nil, queue_repository: nil, tag_repository: nil,
+               clock: -> { Time.now })
+```
+
+- production: `Managers::QueueManager.new` -- opens the real `queue.db`
+- widget tests: `.new(database: Repositories::QueueDatabase.new(db_path: tmp))`
+- manager tests: `.new(queue_repository: mock, tag_repository: mock)`
+
+Build the database only when the repositories were not supplied, or a manager
+test opens a real file it never uses. A manager that opened the database gets
+a `close`; one built from injected repositories has nothing to close.
+
+## Symbol results are an API; keep them when you replace the implementation
+
+`add` returns `:added`/`:already_exists`/`:invalid_url`, `assign_tag` returns
+five different symbols. Repositories underneath return booleans or nil
+(`repository.add` -> object-or-nil, `repository.assign` -> boolean); the
+manager translates. The translation is where "why not" lives -- an unknown
+entry and an unknown tag are both a false from the repository, and callers
+need to tell them apart.

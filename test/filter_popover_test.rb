@@ -6,7 +6,7 @@ class FilterPopoverTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
     @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
 
     # Add entries and tags
@@ -18,17 +18,16 @@ class FilterPopoverTest < Minitest::Test
     entry2 = @queue_manager.find_by_url("https://example.com/2")
     entry3 = @queue_manager.find_by_url("https://example.com/3")
 
-    @queue_manager.assign_tag_by_name(entry1['id'], "YouTube")
-    @queue_manager.assign_tag_by_name(entry1['id'], "Gaming")
-    @queue_manager.assign_tag_by_name(entry2['id'], "YouTube")
-    @queue_manager.assign_tag_by_name(entry3['id'], "Gaming")
-    @queue_manager.assign_tag_by_name(entry3['id'], "Tutorial")
+    @queue_manager.assign_tag_by_name(entry1.id, "YouTube")
+    @queue_manager.assign_tag_by_name(entry1.id, "Gaming")
+    @queue_manager.assign_tag_by_name(entry2.id, "YouTube")
+    @queue_manager.assign_tag_by_name(entry3.id, "Gaming")
+    @queue_manager.assign_tag_by_name(entry3.id, "Tutorial")
   end
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      db.close unless db.closed? rescue nil
+      @queue_manager.close
     end
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
   end
@@ -37,7 +36,7 @@ class FilterPopoverTest < Minitest::Test
     counts = @queue_manager.tag_usage_counts
 
     # Convert to hash for easier assertion
-    count_hash = counts.map { |c| [c['tag_name'], c['count']] }.to_h
+    count_hash = counts.map { |c| [c.name, c.count] }.to_h
 
     assert_equal 2, count_hash['Gaming'], "Gaming should have 2 entries"
     assert_equal 1, count_hash['Tutorial'], "Tutorial should have 1 entry"
@@ -47,7 +46,7 @@ class FilterPopoverTest < Minitest::Test
   def test_tag_usage_counts_alphabetically_sorted
     counts = @queue_manager.tag_usage_counts
 
-    tag_names = counts.map { |c| c['tag_name'] }
+    tag_names = counts.map { |c| c.name }
     sorted_names = tag_names.sort_by(&:downcase)
 
     assert_equal sorted_names, tag_names, "Tags should be alphabetically sorted"

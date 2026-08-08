@@ -73,9 +73,14 @@ clock reads).
 - `favicon_manager.rb` - Favicon fetching with debouncing
 - `queue_metadata_worker.rb` - Background metadata fetching for queue
 
+**Queue** (`lib/repositories/` + `lib/managers/`):
+- `queue_database.rb` - shared `queue.db` connection, schema and migrations
+- `queue_repository.rb` / `tag_repository.rb` - the two tables behind it
+- `queue_manager.rb` - queue CRUD, metadata and tags (the subdomain API)
+- `queue_navigation_manager.rb` - next/previous/remove-and-advance
+
 **External Components** (project root):
 - `history_manager.rb` - SQLite-based browsing history
-- `queue_manager.rb` - SQLite-based read/watch/do queue
 - `video_popout_window.rb` - Picture-in-Picture floating window (WIP)
 - `run` - Wrapper script for asdf environment setup
 
@@ -282,7 +287,8 @@ The queue is a FIFO (first-in-first-out) list for managing URLs you want to read
 
 **Implementation Notes:**
 - Queue entries have integer positions that are renumbered when items are removed or reordered
-- QueueManager handles all database operations with transactions for consistency
+- `Repositories::QueueRepository` owns positions and renumbering; `Repositories::TagRepository` owns tags and assignments; both share one connection so the two tables stay in one transaction scope
+- Queue entries and tags cross bucket boundaries as `Domain::QueueEntry` / `Domain::Tag`, never as row hashes
 - Maximum capacity: thousands of entries (SQLite-backed)
 - UTF-8 encoding enforced via SQLite `PRAGMA encoding = 'UTF-8'`
 

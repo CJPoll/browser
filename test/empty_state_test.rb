@@ -6,7 +6,7 @@ class EmptyStateTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
     @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
 
     # Add entries with different tags (no overlap)
@@ -16,17 +16,16 @@ class EmptyStateTest < Minitest::Test
     entry1 = @queue_manager.find_by_url("https://example.com/1")
     entry2 = @queue_manager.find_by_url("https://example.com/2")
 
-    @youtube_id = @queue_manager.create_or_find_tag("YouTube")
-    @gaming_id = @queue_manager.create_or_find_tag("Gaming")
+    @youtube_id = @queue_manager.create_or_find_tag("YouTube").id
+    @gaming_id = @queue_manager.create_or_find_tag("Gaming").id
 
-    @queue_manager.assign_tag(entry1['id'], @youtube_id)
-    @queue_manager.assign_tag(entry2['id'], @gaming_id)
+    @queue_manager.assign_tag(entry1.id, @youtube_id)
+    @queue_manager.assign_tag(entry2.id, @gaming_id)
   end
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      db.close unless db.closed? rescue nil
+      @queue_manager.close
     end
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
   end

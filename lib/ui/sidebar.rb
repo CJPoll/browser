@@ -456,7 +456,7 @@ class Sidebar
     # Remove filter on click
     remove_button.signal_connect("clicked") do
       tag = queue_list_view.queue_manager.find_tag_by_name(tag_name)
-      queue_list_view.remove_filter_tag(tag['id']) if tag
+      queue_list_view.remove_filter_tag(tag.id) if tag
     end
 
     inner_box.pack_start(remove_button, expand: false, fill: false, padding: 0)

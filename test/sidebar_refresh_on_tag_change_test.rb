@@ -6,7 +6,7 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
 
     # Add queue entry
     @queue_manager.add("https://example.com", "Test Video")
@@ -24,12 +24,7 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      begin
-        db.close unless db.closed?
-      rescue SQLite3::Exception
-        # Ignore
-      end
+      @queue_manager.close
     end
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
   end
@@ -58,8 +53,8 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
 
   def test_callback_invoked_on_tag_unassignment
     # Assign tag first
-    tag_id = @queue_manager.create_or_find_tag("Gaming")
-    @queue_manager.assign_tag(@entry['id'], tag_id)
+    tag_id = @queue_manager.create_or_find_tag("Gaming").id
+    @queue_manager.assign_tag(@entry.id, tag_id)
 
     # Create callback
     callback_invoked = false

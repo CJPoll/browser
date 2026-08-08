@@ -116,16 +116,25 @@ Current classes that already conform:
 | `lib/domain/download_controls.rb` | Domain (conforms) |
 | `lib/domain/host_permission.rb` | Domain (conforms) |
 | `lib/domain/media_permission_type.rb` | Domain (conforms) |
+| `lib/domain/queue_entry.rb` | Domain (conforms -- `added_at:` supplied by the caller) |
+| `lib/domain/tag.rb` | Domain (conforms) |
+| `lib/domain/tag_usage.rb` | Domain (conforms) |
+| `lib/domain/queue_traversal.rb` | Domain (conforms) |
 | `lib/repositories/download_repository.rb` | Repositories |
 | `lib/repositories/popup_exception_repository.rb` | Repositories |
 | `lib/repositories/media_permission_repository.rb` | Repositories |
 | `lib/repositories/notification_permission_repository.rb` | Repositories |
 | `lib/repositories/certificate_exception_repository.rb` | Repositories |
+| `lib/repositories/queue_database.rb` | Repositories (shared `queue.db` connection and schema) |
+| `lib/repositories/queue_repository.rb` | Repositories |
+| `lib/repositories/tag_repository.rb` | Repositories |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
 | `lib/adapters/file_system.rb` | Adapters |
 | `lib/managers/autocomplete_manager.rb` | Managers |
 | `lib/managers/download_coordinator.rb` | Managers |
 | `lib/managers/site_permission_manager.rb` | Managers |
+| `lib/managers/queue_manager.rb` | Managers |
+| `lib/managers/queue_navigation_manager.rb` | Managers |
 | `lib/handlers/download_handler.rb` | Framework (WebKit signals -> Manager) |
 | `lib/ui/download_list_view.rb` | UI (data in, intent callbacks out) |
 | `lib/ui/site_permissions_window.rb` | UI (data in, intent callbacks out) |
@@ -138,7 +147,7 @@ different tables with different semantics:
 |--------------|--------|
 | The four permission pseudo-managers | Deleted -- superseded by the four repositories above plus `Managers::SitePermissionManager`, which resolves URLs to hosts via `Domain::UrlHost` and owns the clock for grants |
 | `history_manager.rb` (root) | `Repositories::HistoryRepository` (`sites`, `pages`, `visits`); its authority logic already lives in `Domain::UrlHost` |
-| `queue_manager.rb` (root) | `Repositories::QueueRepository` (`queue_entries`) + `Repositories::TagRepository` (`tags`, `queue_entry_tag_assignments`), sharing `queue.db`; its URL matching and tag-name rules already live in `Domain::UrlMatcher` and `Domain::TagName` |
+| `queue_manager.rb` (root) | Deleted -- superseded by `Repositories::QueueRepository` + `Repositories::TagRepository` over a shared `Repositories::QueueDatabase`, plus `Managers::QueueManager` and `Managers::QueueNavigationManager` |
 | `download_manager.rb` (root) | Deleted -- superseded by `Repositories::DownloadRepository` + `DownloadCoordinator`, wired in through `DownloadHandler` |
 | `lib/managers/session_manager.rb` | Adapters (JSON file store, not a database) |
 | `lib/managers/settings_manager.rb` | Adapters (JSON file store, not a database) |
@@ -155,24 +164,24 @@ different tables with different semantics:
   on_entry_removed: ->(entry_id) { @queue_manager.remove_entry(entry_id) }
 )
 
-# Manager orchestrates Repository + Domain
+# Manager orchestrates Repository + Domain: it fetches the state, Domain
+# decides, the Manager applies the decision
 class Managers::QueueNavigationManager
-  def initialize(queue_repository:)
-    @queue_repository = queue_repository
+  def initialize(queue_manager)
+    @queue_manager = queue_manager
   end
 
-  def entry_for_current_page(current_url)
-    @queue_repository.all.find do |entry|
-      Domain::UrlMatcher.match?(entry.url, current_url)
-    end
+  def next_entry(current_url)
+    Domain::QueueTraversal.next_after(@queue_manager.all, current_url)
   end
 end
 
-# Repository takes and returns Domain objects; SQL lives only here
+# Repository takes and returns Domain objects; SQL lives only here, and so
+# does the row -> Domain mapping (Domain must not know about columns)
 class Repositories::QueueRepository
   def find_by_id(id)
-    row = @db.get_first_row("SELECT * FROM queue_entries WHERE id = ?", [id])
-    row && Domain::QueueEntry.from_row(row)
+    row = @database.get_first_row("SELECT #{COLUMNS} FROM queue_entries WHERE id = ?", [id])
+    row && build_entry(row)
   end
 end
 

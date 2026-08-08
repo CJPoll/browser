@@ -37,6 +37,8 @@ require_relative 'managers/article_extractor_js'
 require_relative 'managers/site_permission_manager'
 require_relative 'managers/autocomplete_manager'
 require_relative 'managers/download_coordinator'
+require_relative 'managers/queue_manager'
+require_relative 'managers/queue_navigation_manager'
 require_relative 'handlers/download_handler'
 require_relative 'handlers/markdown_handler'
 require_relative 'pdf_bookmark_processor'
@@ -54,7 +56,8 @@ class BrowserWindow < Gtk::Window
 
     # === Core Managers ===
     @history_manager = HistoryManager.new
-    @queue_manager = QueueManager.new
+    @queue_manager = Managers::QueueManager.new
+    @queue_navigation_manager = Managers::QueueNavigationManager.new(@queue_manager)
     @download_coordinator = DownloadCoordinator.new
     @site_permission_manager = Managers::SitePermissionManager.new
     @settings_manager = SettingsManager.new(data_dir: @data_dir)
@@ -229,7 +232,7 @@ class BrowserWindow < Gtk::Window
     queue_list_view = QueueListView.new(@queue_manager,
                                          ->(favicon_data) { create_favicon_image(favicon_data) })
     queue_list_view.on_queue_item_selected = ->(entry) {
-      current_tab.webview.load_uri(entry['url']) if current_tab
+      current_tab.webview.load_uri(entry.url) if current_tab
     }
 
     queue_list_view.on_queue_entry_right_click = ->(entry, event) {
@@ -791,7 +794,7 @@ class BrowserWindow < Gtk::Window
             # Enqueue work for background worker to fetch title and favicon
             entry = @queue_manager.find_by_url(link_uri)
             if entry
-              @queue_metadata_worker.enqueue(entry['id'], link_uri)
+              @queue_metadata_worker.enqueue(entry.id, link_uri)
             end
           when :already_exists
             puts "Already in queue: #{link_uri}"
@@ -1087,7 +1090,7 @@ class BrowserWindow < Gtk::Window
     url = current_tab.uri
 
     # Remove current URL from queue and get the next entry
-    next_entry = @queue_manager.remove_by_url(url)
+    next_entry = @queue_navigation_manager.remove_current_and_advance(url)
 
     # Refresh queue if visible
     if @sidebar_component.mode == :queue
@@ -1096,8 +1099,8 @@ class BrowserWindow < Gtk::Window
 
     # Navigate to next entry if it exists
     if next_entry
-      current_tab.webview.load_uri(next_entry['url'])
-      puts "Removed from queue, navigating to: #{next_entry['title'] || next_entry['url']}"
+      current_tab.webview.load_uri(next_entry.url)
+      puts "Removed from queue, navigating to: #{next_entry.display_title}"
     else
       puts "Removed from queue, no more entries"
     end
@@ -1116,20 +1119,20 @@ class BrowserWindow < Gtk::Window
     return unless entry
 
     # Move up in the queue
-    if @queue_manager.move_up(entry['id'])
+    if @queue_manager.move_up(entry.id)
       # Refresh the queue
       @sidebar_component.refresh_current_view
 
       # Find and select the row that now contains this entry
       @sidebar_component.queue_list_widget.children.each do |row|
         row_entry = row.instance_variable_get(:@queue_entry)
-        if row_entry && row_entry['id'] == entry['id']
+        if row_entry && row_entry.id == entry.id
           @sidebar_component.queue_list_widget.select_row(row)
           break
         end
       end
 
-      puts "Moved up: #{entry['title'] || entry['url']}"
+      puts "Moved up: #{entry.display_title}"
     end
   end
 
@@ -1146,20 +1149,20 @@ class BrowserWindow < Gtk::Window
     return unless entry
 
     # Move down in the queue
-    if @queue_manager.move_down(entry['id'])
+    if @queue_manager.move_down(entry.id)
       # Refresh the queue
       @sidebar_component.refresh_current_view
 
       # Find and select the row that now contains this entry
       @sidebar_component.queue_list_widget.children.each do |row|
         row_entry = row.instance_variable_get(:@queue_entry)
-        if row_entry && row_entry['id'] == entry['id']
+        if row_entry && row_entry.id == entry.id
           @sidebar_component.queue_list_widget.select_row(row)
           break
         end
       end
 
-      puts "Moved down: #{entry['title'] || entry['url']}"
+      puts "Moved down: #{entry.display_title}"
     end
   end
 
@@ -1170,25 +1173,11 @@ class BrowserWindow < Gtk::Window
     current_url = current_tab.webview.uri
     return unless current_url
 
-    # Get all queue entries
-    entries = @queue_manager.all
-    return if entries.empty?
+    next_entry = @queue_navigation_manager.next_entry(current_url)
+    return unless next_entry
 
-    # Find current URL in queue
-    current_index = entries.find_index { |e| e['url'] == current_url }
-
-    if current_index
-      # Navigate to next entry (wrap around to first if at end)
-      next_index = (current_index + 1) % entries.length
-      next_entry = entries[next_index]
-    else
-      # Current URL not in queue, navigate to first entry
-      next_entry = entries.first
-    end
-
-    # Navigate to the next entry
-    current_tab.webview.load_uri(next_entry['url'])
-    puts "Navigated to next queue item: #{next_entry['title'] || next_entry['url']}"
+    current_tab.webview.load_uri(next_entry.url)
+    puts "Navigated to next queue item: #{next_entry.display_title}"
   end
 
   def navigate_to_previous_queue_item
@@ -1198,25 +1187,11 @@ class BrowserWindow < Gtk::Window
     current_url = current_tab.webview.uri
     return unless current_url
 
-    # Get all queue entries
-    entries = @queue_manager.all
-    return if entries.empty?
+    previous_entry = @queue_navigation_manager.previous_entry(current_url)
+    return unless previous_entry
 
-    # Find current URL in queue
-    current_index = entries.find_index { |e| e['url'] == current_url }
-
-    if current_index
-      # Navigate to previous entry (wrap around to last if at beginning)
-      prev_index = (current_index - 1) % entries.length
-      prev_entry = entries[prev_index]
-    else
-      # Current URL not in queue, navigate to last entry
-      prev_entry = entries.last
-    end
-
-    # Navigate to the previous entry
-    current_tab.webview.load_uri(prev_entry['url'])
-    puts "Navigated to previous queue item: #{prev_entry['title'] || prev_entry['url']}"
+    current_tab.webview.load_uri(previous_entry.url)
+    puts "Navigated to previous queue item: #{previous_entry.display_title}"
   end
 
   def move_current_page_up_in_queue
@@ -1226,15 +1201,11 @@ class BrowserWindow < Gtk::Window
     current_url = current_tab.webview.uri
     return unless current_url
 
-    # Find the current URL in the queue
-    entry = @queue_manager.find_by_url(current_url)
-    return unless entry
+    moved = @queue_navigation_manager.move_current_up(current_url)
+    return unless moved
 
-    # Move up in the queue
-    if @queue_manager.move_up(entry['id'])
-      @sidebar_component.refresh_current_view
-      puts "Moved current page up in queue: #{entry['title'] || entry['url']}"
-    end
+    @sidebar_component.refresh_current_view
+    puts "Moved current page up in queue: #{moved.display_title}"
   end
 
   def move_current_page_down_in_queue
@@ -1244,15 +1215,11 @@ class BrowserWindow < Gtk::Window
     current_url = current_tab.webview.uri
     return unless current_url
 
-    # Find the current URL in the queue
-    entry = @queue_manager.find_by_url(current_url)
-    return unless entry
+    moved = @queue_navigation_manager.move_current_down(current_url)
+    return unless moved
 
-    # Move down in the queue
-    if @queue_manager.move_down(entry['id'])
-      @sidebar_component.refresh_current_view
-      puts "Moved current page down in queue: #{entry['title'] || entry['url']}"
-    end
+    @sidebar_component.refresh_current_view
+    puts "Moved current page down in queue: #{moved.display_title}"
   end
 
   # ========================================
@@ -1891,9 +1858,8 @@ class BrowserWindow < Gtk::Window
   # @param event [Gdk::EventButton] Button press event for popup positioning
   def show_queue_entry_context_menu(entry, event)
     # Copy entry data to avoid reference invalidation after menu destruction
-    entry_id = entry['id']
-    entry_url = entry['url']
-    entry_title = entry['title']
+    entry_id = entry.id
+    entry_url = entry.url
 
     menu = Gtk::Menu.new
 
@@ -1909,7 +1875,7 @@ class BrowserWindow < Gtk::Window
     # Refresh Metadata item
     refresh_metadata_item = Gtk::MenuItem.new(label: "Refresh Metadata")
     refresh_metadata_item.signal_connect("activate") do
-      refresh_queue_entry_metadata({'id' => entry_id, 'url' => entry_url})
+      refresh_queue_entry_metadata(entry_id, entry_url)
     end
     menu.append(refresh_metadata_item)
 
@@ -1918,7 +1884,7 @@ class BrowserWindow < Gtk::Window
   end
 
   # Shows tag edit dialog for queue entry
-  # @param entry [Hash] Queue entry with 'id', 'url', 'title'
+  # @param entry [Domain::QueueEntry] Queue entry to edit tags for
   def show_tag_edit_dialog(entry)
     dialog = TagEditDialog.new(
       self,  # parent window
@@ -1948,13 +1914,13 @@ class BrowserWindow < Gtk::Window
   # This is INTENDED behavior - refresh allows re-tagging if URL status changes.
   #
   # @param entry [Hash] Queue entry with 'id', 'url'
-  def refresh_queue_entry_metadata(entry)
-    return unless entry && entry['id'] && entry['url']
+  def refresh_queue_entry_metadata(entry_id, url)
+    return unless entry_id && url
 
     # Enqueue work for background metadata worker
-    @queue_metadata_worker.enqueue(entry['id'], entry['url'])
+    @queue_metadata_worker.enqueue(entry_id, url)
 
-    puts "Refreshing metadata for: #{entry['url']}"
+    puts "Refreshing metadata for: #{url}"
   end
 
   # Shows a popup blocked notification bar

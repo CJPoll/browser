@@ -6,7 +6,7 @@ class QueueListViewTagsTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
 
     # Use test helper method for favicon creator
     @favicon_creator = create_favicon_creator
@@ -16,12 +16,7 @@ class QueueListViewTagsTest < Minitest::Test
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      begin
-        db.close unless db.closed?
-      rescue SQLite3::Exception
-        # Ignore
-      end
+      @queue_manager.close
     end
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
   end
@@ -32,9 +27,9 @@ class QueueListViewTagsTest < Minitest::Test
     entry = @queue_manager.find_by_url("https://example.com/video")
 
     # Create and assign tags (in non-alphabetical order)
-    @queue_manager.assign_tag_by_name(entry['id'], "Zebra")
-    @queue_manager.assign_tag_by_name(entry['id'], "Alpha")
-    @queue_manager.assign_tag_by_name(entry['id'], "Gamma")
+    @queue_manager.assign_tag_by_name(entry.id, "Zebra")
+    @queue_manager.assign_tag_by_name(entry.id, "Alpha")
+    @queue_manager.assign_tag_by_name(entry.id, "Gamma")
 
     # Refresh view
     @queue_list_view.refresh
@@ -70,7 +65,7 @@ class QueueListViewTagsTest < Minitest::Test
 
     # Create and assign 5 tags
     (1..5).each do |i|
-      @queue_manager.assign_tag_by_name(entry['id'], "Tag#{i}")
+      @queue_manager.assign_tag_by_name(entry.id, "Tag#{i}")
     end
 
     # Refresh view

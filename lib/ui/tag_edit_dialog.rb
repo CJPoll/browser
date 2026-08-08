@@ -8,8 +8,8 @@ class TagEditDialog
   # Creates a new tag edit dialog
   #
   # @param parent_window [Gtk::Window] Parent window for modal dialog
-  # @param queue_manager [QueueManager] Queue manager for tag operations
-  # @param entry [Hash] Queue entry hash with keys: 'id', 'title', 'url'
+  # @param queue_manager [Managers::QueueManager] Queue manager for tag operations
+  # @param entry [Domain::QueueEntry] Queue entry being tagged
   # @param on_tags_changed [Proc] Callback invoked after tags change (no args)
   def initialize(parent_window, queue_manager, entry, on_tags_changed: nil)
     @parent_window = parent_window
@@ -18,7 +18,7 @@ class TagEditDialog
     @on_tags_changed = on_tags_changed
 
     # Current assigned tag IDs (for tracking changes)
-    @assigned_tag_ids = @queue_manager.tags_for_entry(@entry['id']).map { |t| t['id'] }
+    @assigned_tag_ids = @queue_manager.tags_for_entry(@entry.id).map(&:id)
 
     # Build dialog
     create_dialog
@@ -37,7 +37,7 @@ class TagEditDialog
   private
 
   def create_dialog
-    title = @entry['title'] || @entry['url']
+    title = @entry.display_title
 
     # Truncate title to exactly 50 chars
     if title.length > 50
@@ -122,24 +122,24 @@ class TagEditDialog
 
     # Checkbox with tag name
     checkbox = Gtk::CheckButton.new
-    checkbox.label = tag['name']
+    checkbox.label = tag.name
     checkbox.margin_top = 6
     checkbox.margin_bottom = 6
     checkbox.margin_start = 12
     checkbox.margin_end = 12
 
     # Check if tag is assigned
-    checkbox.active = @assigned_tag_ids.include?(tag['id'])
+    checkbox.active = @assigned_tag_ids.include?(tag.id)
 
     # Immediate assignment/unassignment on toggle
     checkbox.signal_connect("toggled") do
       if checkbox.active?
         # Assign tag
-        result = @queue_manager.assign_tag(@entry['id'], tag['id'])
+        result = @queue_manager.assign_tag(@entry.id, tag.id)
 
         case result
         when :assigned
-          @assigned_tag_ids << tag['id']
+          @assigned_tag_ids << tag.id
           notify_tags_changed
         when :invalid_entry
           # Entry was deleted - show error and close dialog
@@ -149,11 +149,11 @@ class TagEditDialog
         end
       else
         # Unassign tag
-        result = @queue_manager.unassign_tag(@entry['id'], tag['id'])
+        result = @queue_manager.unassign_tag(@entry.id, tag.id)
 
         case result
         when :unassigned
-          @assigned_tag_ids.delete(tag['id'])
+          @assigned_tag_ids.delete(tag.id)
           notify_tags_changed
         when :invalid_entry
           # Entry was deleted - show error and close dialog
@@ -188,7 +188,7 @@ class TagEditDialog
 
     @tag_list_box.children.each do |row|
       tag = row.instance_variable_get(:@tag)
-      should_show = search_text.empty? || tag['name'].downcase.include?(search_text)
+      should_show = search_text.empty? || tag.name.downcase.include?(search_text)
       if should_show
         row.show
         row.instance_variable_set(:@filter_visible, true)
@@ -252,19 +252,19 @@ class TagEditDialog
     return if tag_name.empty?  # Silent no-op for empty input
 
     # Create or find tag
-    tag_id = @queue_manager.create_or_find_tag(tag_name)
-    if tag_id.nil?
+    new_tag = @queue_manager.create_or_find_tag(tag_name)
+    if new_tag.nil?
       # Invalid tag name (too long, whitespace-only, etc.)
       show_error_dialog("Invalid tag name")
       return
     end
 
     # Assign to entry
-    result = @queue_manager.assign_tag(@entry['id'], tag_id)
+    result = @queue_manager.assign_tag(@entry.id, new_tag.id)
 
     case result
     when :assigned
-      @assigned_tag_ids << tag_id
+      @assigned_tag_ids << new_tag.id
       @new_tag_entry.text = ""
       refresh_tag_list  # Reapplies search filter
       notify_tags_changed
@@ -274,7 +274,7 @@ class TagEditDialog
       # Find and scroll to existing checkbox (no flash effect - visual feedback from scrolling)
       @tag_list_box.children.each do |row|
         tag = row.instance_variable_get(:@tag)
-        if tag['id'] == tag_id
+        if tag.id == new_tag.id
           # Scroll to row to show user the tag is already assigned
           @tag_list_box.select_row(row)
           break

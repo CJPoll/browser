@@ -9,7 +9,7 @@ class QueueListView
 
   # Creates a new queue list view
   #
-  # @param queue_manager [QueueManager] Queue manager for querying and modifying queue
+  # @param queue_manager [Managers::QueueManager] Queue manager for querying and modifying queue
   # @param favicon_image_creator [Proc] Proc that creates favicon images: ->(favicon_data) { Gtk::Image }
   def initialize(queue_manager, favicon_image_creator)
     @queue_manager = queue_manager
@@ -18,7 +18,7 @@ class QueueListView
     @list_widget.selection_mode = :single
 
     # Callback invoked when queue item is clicked
-    # Signature: ->(entry) { ... } where entry is a hash with 'url' key
+    # Signature: ->(entry) { ... } where entry is a Domain::QueueEntry
     @on_queue_item_selected = nil
 
     # Callback invoked after queue is modified (for refreshing count in header)
@@ -61,7 +61,7 @@ class QueueListView
 
   # Sets callback to invoke when queue item is selected
   #
-  # @param callback [Proc] Callback proc accepting entry hash: ->(entry) { ... }
+  # @param callback [Proc] Callback proc accepting a Domain::QueueEntry: ->(entry) { ... }
   # @return [void]
   def on_queue_item_selected=(callback)
     @on_queue_item_selected = callback
@@ -158,7 +158,7 @@ class QueueListView
     return unless tag
 
     # Set as the only active filter (replaces existing filters)
-    @active_filter_tag_ids = [tag['id']]
+    @active_filter_tag_ids = [tag.id]
     apply_filters
   end
 
@@ -175,7 +175,7 @@ class QueueListView
   def active_filter_tag_names
     @active_filter_tag_ids.map do |tag_id|
       tag = @queue_manager.find_tag_by_id(tag_id)
-      tag ? tag['name'] : nil
+      tag ? tag.name : nil
     end.compact
   end
 
@@ -251,7 +251,7 @@ class QueueListView
         @list_widget.add(row)
 
         # Highlight the queue entry that matches the current tab's URL
-        if Domain::UrlMatcher.match?(entry['url'], current_url)
+        if Domain::UrlMatcher.match?(entry.url, current_url)
           @list_widget.select_row(row)
         end
       end
@@ -319,7 +319,7 @@ class QueueListView
 
   # Gets queue entries with current filters and sort applied
   #
-  # @return [Array<Hash>] Filtered and sorted entries
+  # @return [Array<Domain::QueueEntry>] Filtered and sorted entries
   def get_filtered_sorted_entries
     if @active_filter_tag_ids.empty?
       # No filters - get all entries
@@ -335,12 +335,12 @@ class QueueListView
       # Already sorted by position from database
       entries
     when :title
-      entries.sort_by { |e| (e['title'] || e['url']).downcase }
+      entries.sort_by { |e| e.display_title.downcase }
     when :date_published
       # Sort by date descending, NULLs last
       entries.sort do |a, b|
-        date_a = a['date']
-        date_b = b['date']
+        date_a = a.published_at
+        date_b = b.published_at
 
         if date_a.nil? && date_b.nil?
           0
@@ -407,7 +407,7 @@ class QueueListView
 
   # Creates a list box row for a queue entry
   #
-  # @param entry [Hash] Entry data with keys: 'id', 'url', 'title', 'favicon', 'position'
+  # @param entry [Domain::QueueEntry] Entry to render
   # @return [Gtk::ListBoxRow] Configured row widget
   def create_queue_row(entry)
     row = Gtk::ListBoxRow.new
@@ -420,7 +420,7 @@ class QueueListView
     hbox.margin_end = 12
 
     # Favicon
-    favicon_image = @favicon_image_creator.call(entry['favicon'])
+    favicon_image = @favicon_image_creator.call(entry.favicon_data)
     favicon_image.valign = :start
     hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
 
@@ -428,7 +428,7 @@ class QueueListView
     vbox = Gtk::Box.new(:vertical, 2)
 
     # Title
-    title = entry['title'] || entry['url']
+    title = entry.display_title
     # Ensure UTF-8 encoding for display
     title = title.dup.force_encoding('UTF-8') if title
     unless title.valid_encoding?
@@ -442,7 +442,7 @@ class QueueListView
     vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
 
     # URL
-    url_label = Gtk::Label.new(entry['url'])
+    url_label = Gtk::Label.new(entry.url)
     url_label.halign = :start
     url_label.ellipsize = :middle
     url_label.max_width_chars = 40
@@ -450,18 +450,18 @@ class QueueListView
     vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
 
     # Tags display
-    tags = @queue_manager.tags_for_entry(entry['id'])
+    tags = @queue_manager.tags_for_entry(entry.id)
     tags_box = Gtk::Box.new(:horizontal, 8)
     tags_box.halign = :start
 
     if tags.length > 0
       # Sort tags alphabetically (case-insensitive)
-      sorted_tags = tags.sort_by { |tag| tag['name'].downcase }
+      sorted_tags = tags.sort_by { |tag| tag.name.downcase }
 
       # Show first 3 tags
       visible_tags = sorted_tags.take(3)
       visible_tags.each do |tag|
-        pill = create_tag_pill(tag['name'])
+        pill = create_tag_pill(tag.name)
         tags_box.pack_start(pill, expand: false, fill: false, padding: 0)
       end
 
@@ -482,7 +482,7 @@ class QueueListView
     remove_button = Gtk::Button.new(label: "×")
     remove_button.relief = :none
     remove_button.signal_connect("clicked") do
-      @queue_manager.remove_by_id(entry['id'])
+      @queue_manager.remove_by_id(entry.id)
       refresh()  # Refresh after removal
       true  # Stop event propagation to prevent row-activated signal
     end
@@ -549,7 +549,7 @@ class QueueListView
       entry = w.instance_variable_get(:@queue_entry)
       if entry
         # Send the entry ID as plain text (converted to string for transfer)
-        selection_data.text = entry['id'].to_s
+        selection_data.text = entry.id.to_s
       end
     end
 
@@ -587,16 +587,16 @@ class QueueListView
         dropped_entry_id = dropped_id_text.to_i  # Convert back to integer
         target_entry = w.instance_variable_get(:@queue_entry)
 
-        if target_entry && dropped_entry_id != target_entry['id']
+        if target_entry && dropped_entry_id != target_entry.id
           # Move the dropped entry to the target position
-          if view.queue_manager.move(dropped_entry_id, target_entry['position'])
+          if view.queue_manager.move(dropped_entry_id, target_entry.position)
             # Refresh the queue to show the new order
             view.refresh()
 
             # Find and select the moved row
             view.list_widget.children.each do |child|
               child_entry = child.instance_variable_get(:@queue_entry)
-              if child_entry && child_entry['id'] == dropped_entry_id
+              if child_entry && child_entry.id == dropped_entry_id
                 view.list_widget.select_row(child)
                 break
               end
@@ -775,17 +775,17 @@ class QueueListView
     tags_box = Gtk::Box.new(:vertical, 4)
 
     # Get tag usage counts
-    tag_counts = @queue_manager.tag_usage_counts
+    tag_usages = @queue_manager.tag_usage_counts
 
-    if tag_counts.empty?
+    if tag_usages.empty?
       # No tags exist - show message
       no_tags_label = Gtk::Label.new("No tags available")
       no_tags_label.style_context.add_class("dim-label")
       tags_box.pack_start(no_tags_label, expand: false, fill: false, padding: 8)
     else
       # Create checkbox for each tag with usage count
-      tag_counts.each do |tag_data|
-        checkbox = create_filter_checkbox(tag_data)
+      tag_usages.each do |tag_usage|
+        checkbox = create_filter_checkbox(tag_usage)
         tags_box.pack_start(checkbox, expand: false, fill: false, padding: 0)
       end
     end
@@ -812,12 +812,12 @@ class QueueListView
 
   # Creates a filter checkbox for a tag
   #
-  # @param tag_data [Hash] Hash with 'tag_id', 'tag_name', 'count' keys
+  # @param tag_usage [Domain::TagUsage] Tag with its carrier count
   # @return [Gtk::CheckButton] Configured checkbox
-  def create_filter_checkbox(tag_data)
-    tag_id = tag_data['tag_id']
-    tag_name = tag_data['tag_name']
-    count = tag_data['count']
+  def create_filter_checkbox(tag_usage)
+    tag_id = tag_usage.tag_id
+    tag_name = tag_usage.name
+    count = tag_usage.count
 
     checkbox = Gtk::CheckButton.new
     checkbox.label = "#{tag_name} (#{count})"

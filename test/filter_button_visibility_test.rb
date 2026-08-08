@@ -15,7 +15,7 @@ class FilterButtonVisibilityTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
     @history_manager = HistoryManager.new(File.join(File.dirname(@temp_db_path), 'history.db'))
 
     # Create view components
@@ -41,8 +41,7 @@ class FilterButtonVisibilityTest < Minitest::Test
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      db.close unless db.closed? rescue nil
+      @queue_manager.close
     end
     if @history_manager
       db = @history_manager.instance_variable_get(:@db)

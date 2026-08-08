@@ -7,7 +7,7 @@ class YouTubeMetadataWorkerTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
     @worker = QueueMetadataWorker.new(@queue_manager)
   end
 
@@ -16,8 +16,7 @@ class YouTubeMetadataWorkerTest < Minitest::Test
     @worker.stop if @worker
 
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      db.close unless db.closed?
+      @queue_manager.close
     end
 
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)

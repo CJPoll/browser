@@ -37,7 +37,9 @@ require 'fileutils'
 require 'gtk3'
 
 # Load the application code
-require_relative '../queue_manager'
+require_relative '../lib/repositories/queue_database'
+require_relative '../lib/managers/queue_manager'
+require_relative '../lib/managers/queue_navigation_manager'
 require_relative '../lib/managers/queue_metadata_worker'
 require_relative '../lib/ui/queue_list_view'
 require_relative '../lib/ui/tag_edit_dialog'
@@ -83,6 +85,18 @@ module TestHelpers
   # @return [Proc] Proc that returns empty Gtk::Image
   def create_favicon_creator
     ->(favicon_data) { Gtk::Image.new }
+  end
+
+  # Builds a queue manager backed by a real SQLite file.
+  #
+  # These are widget tests, not manager tests, so they use the real stack
+  # rather than mocks -- the queue is what the widget renders. Close it in
+  # teardown with `@queue_manager.close`.
+  #
+  # @param db_path [String] Path to a temporary SQLite file
+  # @return [Managers::QueueManager]
+  def create_queue_manager(db_path)
+    Managers::QueueManager.new(database: Repositories::QueueDatabase.new(db_path: db_path))
   end
 end
 

@@ -8,7 +8,7 @@ class YouTubeAutoTaggingIntegrationTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
     @worker = QueueMetadataWorker.new(@queue_manager)
   end
 
@@ -17,8 +17,7 @@ class YouTubeAutoTaggingIntegrationTest < Minitest::Test
     @worker.stop if @worker
 
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      db.close unless db.closed?
+      @queue_manager.close
     end
 
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
@@ -63,7 +62,7 @@ class YouTubeAutoTaggingIntegrationTest < Minitest::Test
       .to_return(status: 404, body: "", headers: {})
 
     # Execute: Enqueue metadata fetch
-    @worker.enqueue(entry['id'], url)
+    @worker.enqueue(entry.id, url)
 
     # Gap 7 RESOLUTION: Polling loop pattern confirmation
     # CLAUDE.md hard rule states:
@@ -82,24 +81,24 @@ class YouTubeAutoTaggingIntegrationTest < Minitest::Test
     tags = []
 
     while iteration < max_iterations
-      tags = @queue_manager.tags_for_entry(entry['id'])
+      tags = @queue_manager.tags_for_entry(entry.id)
       break if tags.length >= 2  # Expecting YouTube + channel tag
       sleep 0.1  # Short sleep inside condition-checking loop (acceptable)
       iteration += 1
     end
 
     # Assert: "YouTube" tag is assigned
-    tag_names = tags.map { |tag| tag['name'] }
+    tag_names = tags.map { |tag| tag.name }
     assert_includes tag_names, "YouTube", "Should auto-assign YouTube tag"
 
     # Assert: Channel tag is assigned
     assert_includes tag_names, "Rick Astley", "Should auto-assign channel tag"
 
     # Assert: Publish date is stored
-    updated_entry = @queue_manager.find_by_id(entry['id'])
-    assert_not_nil updated_entry['date'], "Should store publish date"
+    updated_entry = @queue_manager.find_by_id(entry.id)
+    assert_not_nil updated_entry.published_at, "Should store publish date"
 
-    expected_timestamp = Time.parse("2009-10-25T07:00:00Z").to_i
-    assert_equal expected_timestamp, updated_entry['date']
+    expected_timestamp = Time.parse("2009-10-25T07:00:00Z")
+    assert_equal expected_timestamp, updated_entry.published_at
   end
 end

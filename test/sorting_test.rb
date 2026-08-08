@@ -6,7 +6,7 @@ class SortingTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
     @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
 
     # Add entries with different dates
@@ -15,15 +15,14 @@ class SortingTest < Minitest::Test
     @queue_manager.add("https://example.com/c", "Middle Video")
 
     # Set dates (Unix timestamps)
-    @queue_manager.update_date("https://example.com/a", 1704067200)  # 2024-01-01
-    @queue_manager.update_date("https://example.com/b", 1717200000)  # 2024-06-01
+    @queue_manager.update_published_at("https://example.com/a", Time.at(1704067200))  # 2024-01-01
+    @queue_manager.update_published_at("https://example.com/b", Time.at(1717200000))  # 2024-06-01
     # Entry C has NULL date (not set)
   end
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      db.close unless db.closed? rescue nil
+      @queue_manager.close
     end
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
   end
@@ -32,7 +31,7 @@ class SortingTest < Minitest::Test
     assert_equal :position, @queue_list_view.current_sort_mode
 
     entries = @queue_list_view.send(:get_filtered_sorted_entries)
-    titles = entries.map { |e| e['title'] }
+    titles = entries.map { |e| e.title }
 
     # Position order is insertion order
     assert_equal ["Zebra Video", "Alpha Video", "Middle Video"], titles
@@ -42,7 +41,7 @@ class SortingTest < Minitest::Test
     @queue_list_view.set_sort_mode(:title)
 
     entries = @queue_list_view.send(:get_filtered_sorted_entries)
-    titles = entries.map { |e| e['title'] }
+    titles = entries.map { |e| e.title }
 
     assert_equal ["Alpha Video", "Middle Video", "Zebra Video"], titles
   end
@@ -54,7 +53,7 @@ class SortingTest < Minitest::Test
     @queue_list_view.set_sort_mode(:title)
 
     entries = @queue_list_view.send(:get_filtered_sorted_entries)
-    titles = entries.map { |e| e['title'] }
+    titles = entries.map { |e| e.title }
 
     # aardvark should come first
     assert_equal "aardvark Video", titles.first
@@ -64,7 +63,7 @@ class SortingTest < Minitest::Test
     @queue_list_view.set_sort_mode(:date_published)
 
     entries = @queue_list_view.send(:get_filtered_sorted_entries)
-    titles = entries.map { |e| e['title'] }
+    titles = entries.map { |e| e.title }
 
     # Alpha Video (June) is newest, then Zebra (Jan), then Middle (NULL last)
     assert_equal ["Alpha Video", "Zebra Video", "Middle Video"], titles
@@ -77,8 +76,8 @@ class SortingTest < Minitest::Test
     last_entry = entries.last
 
     # Middle Video has NULL date, should be last
-    assert_equal "Middle Video", last_entry['title']
-    assert_nil last_entry['date']
+    assert_equal "Middle Video", last_entry.title
+    assert_nil last_entry.published_at
   end
 
   def test_sort_combined_with_filter
@@ -86,9 +85,9 @@ class SortingTest < Minitest::Test
     entry_a = @queue_manager.find_by_url("https://example.com/a")
     entry_b = @queue_manager.find_by_url("https://example.com/b")
 
-    tag_id = @queue_manager.create_or_find_tag("TestTag")
-    @queue_manager.assign_tag(entry_a['id'], tag_id)
-    @queue_manager.assign_tag(entry_b['id'], tag_id)
+    tag_id = @queue_manager.create_or_find_tag("TestTag").id
+    @queue_manager.assign_tag(entry_a.id, tag_id)
+    @queue_manager.assign_tag(entry_b.id, tag_id)
 
     # Apply filter
     @queue_list_view.add_filter_tag(tag_id)
@@ -97,7 +96,7 @@ class SortingTest < Minitest::Test
     @queue_list_view.set_sort_mode(:title)
 
     entries = @queue_list_view.send(:get_filtered_sorted_entries)
-    titles = entries.map { |e| e['title'] }
+    titles = entries.map { |e| e.title }
 
     # Only entries with tag, sorted by title
     assert_equal ["Alpha Video", "Zebra Video"], titles

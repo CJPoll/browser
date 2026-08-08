@@ -38,6 +38,7 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::OauthPopup` | does this URL need a real popup window? |
 | `Domain::TagName` | what is the canonical form of this tag name? |
 | `Domain::Frecency` | how relevant is this history entry? |
+| `Domain::QueueTraversal` | which queue entry comes next from here? |
 
 ## Return a decision, not a side effect
 
@@ -109,3 +110,32 @@ assert_equal NOW, build_download.mark_completed(now: NOW).completed_at
 
 Also assert that the injection point exists -- a test that omitting `now:`
 raises `ArgumentError` is what stops a default from creeping back in.
+
+## Value objects: `with`, `to_h`, and value equality
+
+The queue and tag objects follow the shape `Download` and `HostPermission`
+established, and it is worth copying wholesale:
+
+- required arguments raise `ArgumentError` with the attribute name;
+- `freeze` at the end of `initialize`;
+- `to_h` is the single definition of "every attribute", and `==`/`eql?`/`hash`
+  are all written in terms of it, so adding an attribute cannot leave equality
+  behind;
+- `with(**overrides)` returns a copy (`to_h.merge(overrides)`), which is how a
+  repository stamps an id and position onto an entry it just inserted;
+- `==` checks the class, so an object is never equal to a lookalike hash --
+  worth a test, because that is exactly the bug a hash-to-object migration
+  leaves behind.
+
+Give the object the derived reader the callers keep re-deriving.
+`QueueEntry#display_title` (`title || url`) replaced four copies of
+`entry['title'] || entry['url']` across the window and the sidebar.
+
+## Predicates about "what may this subdomain accept" live on the Domain object
+
+`Domain::QueueEntry.queueable_url?` answers "will the queue take this URL?"
+(http/https only). It sits with `QueueEntry` rather than in a URL module
+because it is the *queue's* rule, not a fact about URLs -- a `file://` link is
+perfectly valid, just not queueable. The manager calls it before constructing
+anything, so the rule is testable without a database and cannot be bypassed by
+a second caller.

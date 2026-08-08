@@ -6,19 +6,19 @@ class TagEditDialogTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @queue_manager = QueueManager.new(@temp_db_path)
+    @queue_manager = create_queue_manager(@temp_db_path)
 
     # Add queue entry
     @queue_manager.add("https://example.com", "Test Page")
     @entry = @queue_manager.find_by_url("https://example.com")
 
     # Create tags
-    @tag1_id = @queue_manager.create_or_find_tag("Tag1")
-    @tag2_id = @queue_manager.create_or_find_tag("Tag2")
-    @tag3_id = @queue_manager.create_or_find_tag("Tag3")
+    @tag1_id = @queue_manager.create_or_find_tag("Tag1").id
+    @tag2_id = @queue_manager.create_or_find_tag("Tag2").id
+    @tag3_id = @queue_manager.create_or_find_tag("Tag3").id
 
     # Assign Tag1 only
-    @queue_manager.assign_tag(@entry['id'], @tag1_id)
+    @queue_manager.assign_tag(@entry.id, @tag1_id)
 
     # Track callback invocations
     @callback_count = 0
@@ -27,12 +27,7 @@ class TagEditDialogTest < Minitest::Test
 
   def teardown
     if @queue_manager
-      db = @queue_manager.instance_variable_get(:@db)
-      begin
-        db.close unless db.closed?
-      rescue SQLite3::Exception
-        # Ignore
-      end
+      @queue_manager.close
     end
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
   end
@@ -74,8 +69,8 @@ class TagEditDialogTest < Minitest::Test
     assert_not_nil tag, "Tag should be created"
 
     # Verify tag assigned
-    tags = @queue_manager.tags_for_entry(@entry['id'])
-    tag_names = tags.map { |t| t['name'] }
+    tags = @queue_manager.tags_for_entry(@entry.id)
+    tag_names = tags.map { |t| t.name }
     assert_includes tag_names, "NewTag", "Tag should be assigned to entry"
 
     # Verify callback invoked
@@ -181,11 +176,12 @@ class TagEditDialogTest < Minitest::Test
   def test_dialog_with_nonexistent_entry_id
     # Addresses Gap #8 - deleted entry handling
     # Create entry hash with non-existent ID
-    fake_entry = {
-      'id' => 99999,
-      'url' => 'https://example.com',
-      'title' => 'Non-existent Entry'
-    }
+    fake_entry = Domain::QueueEntry.new(
+      id: 99999,
+      url: 'https://example.com',
+      title: 'Non-existent Entry',
+      added_at: Time.at(1_700_000_000)
+    )
 
     # Dialog should initialize without error
     dialog = TagEditDialog.new(

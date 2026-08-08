@@ -8,7 +8,7 @@ require_relative 'auto_tagger'
 class QueueMetadataWorker
   # Creates a new background worker
   #
-  # @param queue_manager [QueueManager] Queue manager instance for database updates
+  # @param queue_manager [Managers::QueueManager] Queue manager for persistence
   def initialize(queue_manager)
     @queue_manager = queue_manager
     @work_queue = Thread::Queue.new
@@ -163,7 +163,7 @@ class QueueMetadataWorker
     # Update database
     @queue_manager.update_title(url, metadata[:title]) if metadata[:title]
     @queue_manager.update_favicon(url, metadata[:favicon_data]) if metadata[:favicon_data]
-    @queue_manager.update_date(url, metadata[:publish_date]) if metadata[:publish_date]
+    @queue_manager.update_published_at(url, Time.at(metadata[:publish_date])) if metadata[:publish_date]
 
     # Auto-assign tags for YouTube videos
     if metadata[:is_youtube]
