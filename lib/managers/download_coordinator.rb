@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
+require_relative '../adapters/file_system'
 require_relative '../domain/download'
+require_relative '../domain/download_badge'
+require_relative '../repositories/download_repository'
 
 # DownloadCoordinator orchestrates download operations between the UI layer
 # and Repositories::DownloadRepository.
@@ -14,6 +17,13 @@ require_relative '../domain/download'
 # Thread Safety: All operations are synchronous. Caller is responsible
 # for thread safety when using from multiple threads.
 class DownloadCoordinator
+  # How long finished download records are kept before cleanup_old_downloads
+  # discards them.
+  RETENTION_DAYS = 30
+
+  # How often the Framework should call cleanup_old_downloads.
+  CLEANUP_INTERVAL_SECONDS = 300
+
   # Creates a new DownloadCoordinator
   #
   # Owns the clock on behalf of the Download domain object, which never reads
@@ -21,9 +31,13 @@ class DownloadCoordinator
   #
   # @param repository [Repositories::DownloadRepository] Repository for persisting downloads
   # @param clock [#call] Returns the current Time
-  def initialize(repository, clock: -> { Time.now })
+  # @param file_system [Adapters::FileSystem] Answers what already exists on disk
+  def initialize(repository = Repositories::DownloadRepository.new,
+                 clock: -> { Time.now },
+                 file_system: Adapters::FileSystem.new)
     @repository = repository
     @clock = clock
+    @file_system = file_system
   end
 
   # Starts a new download
@@ -32,14 +46,9 @@ class DownloadCoordinator
   # @param destination [String] Intended destination path
   # @return [Download] The created download with resolved destination path
   def start_download(url, destination)
-    # Resolve filename conflicts
-    existing_paths = @repository.find_existing_paths([destination])
-    resolved_destination = Download.resolve_filename_conflict(destination, existing_paths)
-
-    # Create and persist download
     download = Download.new(
       url: url,
-      destination: resolved_destination,
+      destination: resolve_destination(destination),
       created_at: @clock.call
     )
     @repository.save(download)
@@ -104,6 +113,37 @@ class DownloadCoordinator
     @repository.save(updated)
   end
 
+  # Pauses a download
+  #
+  # WebKit cannot suspend a transfer, so the caller cancels the underlying
+  # WebKit download; this records the intent and keeps the bytes received so
+  # far. The destination stays reserved for the eventual resume.
+  #
+  # @param download_id [Integer] Download ID
+  # @return [Download, nil] Updated download, or nil if not found or not running
+  def pause_download(download_id)
+    download = @repository.find_by_id(download_id)
+    return nil unless download
+    return nil unless download.can_pause?
+
+    @repository.save(download.mark_paused)
+  end
+
+  # Resumes (or retries) a download
+  #
+  # The transfer restarts from zero against the same destination -- the caller
+  # is expected to kick off a fresh WebKit download for the returned record.
+  #
+  # @param download_id [Integer] Download ID
+  # @return [Download, nil] Updated download, or nil if not found or not resumable
+  def resume_download(download_id)
+    download = @repository.find_by_id(download_id)
+    return nil unless download
+    return nil unless download.can_resume?
+
+    @repository.save(download.mark_resumed(now: @clock.call))
+  end
+
   # Gets a download by ID
   #
   # @param download_id [Integer] Download ID
@@ -132,5 +172,59 @@ class DownloadCoordinator
   # @return [Boolean] True if deleted, false if not found
   def delete_download(download_id)
     @repository.delete(download_id)
+  end
+
+  # Number of downloads on record, in any state
+  #
+  # @return [Integer] Total downloads
+  def download_count
+    @repository.find_all.length
+  end
+
+  # Number of downloads still in flight
+  #
+  # @return [Integer] Active downloads
+  def active_download_count
+    @repository.find_active.length
+  end
+
+  # Toolbar badge state for the current downloads
+  #
+  # @return [Symbol] :none, :paused, or :active
+  def badge_state
+    Domain::DownloadBadge.state(@repository.find_active)
+  end
+
+  # Discards download records older than the retention period
+  #
+  # Records only -- the downloaded files themselves are never touched. The
+  # Framework schedules this every CLEANUP_INTERVAL_SECONDS.
+  #
+  # @param retention_days [Integer] Age beyond which records are discarded
+  # @return [void]
+  def cleanup_old_downloads(retention_days: RETENTION_DAYS)
+    @repository.delete_older_than(retention_days)
+  end
+
+  private
+
+  # Finds the first destination path not already claimed by a download record
+  # or by a file on disk.
+  #
+  # @param destination [String] Intended destination path
+  # @return [String] A free destination path
+  def resolve_destination(destination)
+    counter = 0
+
+    loop do
+      candidate = Download.numbered_destination(destination, counter)
+      return candidate unless destination_taken?(candidate)
+
+      counter += 1
+    end
+  end
+
+  def destination_taken?(path)
+    !@repository.find_existing_paths([path]).empty? || @file_system.exist?(path)
   end
 end

@@ -108,7 +108,7 @@ class DownloadRepositoryTest < Minitest::Test
     assert_equal 'https://example.com/old.pdf', downloads[1].url
   end
 
-  def test_find_active_only_returns_pending_and_in_progress
+  def test_find_active_returns_pending_in_progress_and_paused
     pending = build_download(
       url: 'https://example.com/pending.pdf',
       destination: '/tmp/pending.pdf'
@@ -118,6 +118,13 @@ class DownloadRepositoryTest < Minitest::Test
       destination: '/tmp/in_progress.pdf'
     ).mark_started(now: @now + 1)
 
+    # A paused download is still active: it holds its destination and the
+    # toolbar badge reports it.
+    paused = build_download(
+      url: 'https://example.com/paused.pdf',
+      destination: '/tmp/paused.pdf'
+    ).mark_started(now: @now + 1).mark_paused
+
     completed = build_download(
       url: 'https://example.com/completed.pdf',
       destination: '/tmp/completed.pdf'
@@ -125,15 +132,30 @@ class DownloadRepositoryTest < Minitest::Test
 
     @repository.save(pending)
     @repository.save(in_progress)
+    @repository.save(paused)
     @repository.save(completed)
 
     active = @repository.find_active
 
-    assert_equal 2, active.length
+    assert_equal 3, active.length
     urls = active.map(&:url)
     assert_includes urls, 'https://example.com/pending.pdf'
     assert_includes urls, 'https://example.com/in_progress.pdf'
+    assert_includes urls, 'https://example.com/paused.pdf'
     refute_includes urls, 'https://example.com/completed.pdf'
+  end
+
+  def test_paused_state_round_trips
+    paused = build_download(
+      url: 'https://example.com/file.pdf',
+      destination: '/tmp/file.pdf'
+    ).mark_started(now: @now + 1).with(bytes_received: 512, total_bytes: 1024).mark_paused
+
+    saved = @repository.save(paused)
+    found = @repository.find_by_id(saved.id)
+
+    assert_equal :paused, found.state
+    assert_equal 512, found.bytes_received
   end
 
   def test_find_by_state

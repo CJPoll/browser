@@ -31,7 +31,7 @@ class DownloadTest < Minitest::Test
   end
 
   def test_state_validation
-    valid_states = [:pending, :in_progress, :completed, :failed, :cancelled]
+    valid_states = [:pending, :in_progress, :paused, :completed, :failed, :cancelled]
 
     valid_states.each do |state|
       download = build_download(state: state)
@@ -105,6 +105,42 @@ class DownloadTest < Minitest::Test
     refute build_download(state: :cancelled).can_cancel?
   end
 
+  def test_can_cancel_when_paused
+    # A paused download still occupies a row in the active list, so the UI
+    # offers Cancel alongside Resume.
+    assert build_download(state: :paused).can_cancel?
+  end
+
+  # ========================================
+  # Pausability and Resumability
+  # ========================================
+
+  def test_can_pause_while_running
+    assert build_download(state: :pending).can_pause?
+    assert build_download(state: :in_progress).can_pause?
+  end
+
+  def test_cannot_pause_once_stopped
+    refute build_download(state: :paused).can_pause?
+    refute build_download(state: :completed).can_pause?
+    refute build_download(state: :failed).can_pause?
+    refute build_download(state: :cancelled).can_pause?
+  end
+
+  def test_can_resume_when_paused_or_failed
+    # Resume and Retry are the same transition: a fresh transfer to the same
+    # destination. WebKit cannot continue a partial download.
+    assert build_download(state: :paused).can_resume?
+    assert build_download(state: :failed).can_resume?
+  end
+
+  def test_cannot_resume_otherwise
+    refute build_download(state: :pending).can_resume?
+    refute build_download(state: :in_progress).can_resume?
+    refute build_download(state: :completed).can_resume?
+    refute build_download(state: :cancelled).can_resume?
+  end
+
   # ========================================
   # State Predicates
   # ========================================
@@ -112,6 +148,7 @@ class DownloadTest < Minitest::Test
   def test_active_states
     assert build_download(state: :pending).active?
     assert build_download(state: :in_progress).active?
+    assert build_download(state: :paused).active?
     refute build_download(state: :completed).active?
     refute build_download(state: :failed).active?
     refute build_download(state: :cancelled).active?
@@ -120,6 +157,7 @@ class DownloadTest < Minitest::Test
   def test_terminal_states
     refute build_download(state: :pending).terminal_state?
     refute build_download(state: :in_progress).terminal_state?
+    refute build_download(state: :paused).terminal_state?
     assert build_download(state: :completed).terminal_state?
     assert build_download(state: :failed).terminal_state?
     assert build_download(state: :cancelled).terminal_state?
@@ -172,6 +210,55 @@ class DownloadTest < Minitest::Test
     assert_equal :in_progress, download.state # Original unchanged
   end
 
+  def test_state_transition_to_paused_keeps_the_bytes_already_received
+    # Pausing cancels the underlying transfer but keeps the byte count so the
+    # UI can report how far the download got.
+    download = build_download(state: :in_progress, bytes_received: 512, total_bytes: 1024)
+
+    updated = download.mark_paused
+
+    assert_equal :paused, updated.state
+    assert_equal 512, updated.bytes_received
+    assert_equal 1024, updated.total_bytes
+    assert_equal :in_progress, download.state # Original unchanged
+  end
+
+  def test_pausing_stamps_no_timestamp
+    # There is no paused_at column, and adding one would be a schema change.
+    # mark_paused therefore takes no clock at all.
+    download = build_download(state: :pending).mark_started(now: NOW)
+
+    paused = download.mark_paused
+
+    assert_equal NOW, paused.started_at
+    assert_nil paused.completed_at
+  end
+
+  def test_state_transition_to_resumed_restarts_the_transfer
+    # Resuming starts a fresh download to the same destination, so the byte
+    # count restarts at zero and started_at is re-stamped.
+    download = build_download(state: :in_progress, bytes_received: 512, total_bytes: 1024)
+                 .mark_started(now: NOW)
+                 .mark_paused
+
+    resumed = download.mark_resumed(now: NOW + 120)
+
+    assert_equal :in_progress, resumed.state
+    assert_equal 0, resumed.bytes_received
+    assert_equal NOW + 120, resumed.started_at
+    assert_equal '/tmp/file.pdf', resumed.destination
+  end
+
+  def test_resuming_a_failed_download_clears_the_error
+    failed = build_download(state: :in_progress).mark_failed('Network error', now: NOW)
+
+    resumed = failed.mark_resumed(now: NOW + 5)
+
+    assert_equal :in_progress, resumed.state
+    assert_nil resumed.error_message
+    assert_nil resumed.completed_at
+  end
+
   def test_transitions_require_an_injected_time
     download = build_download(state: :in_progress)
 
@@ -179,6 +266,7 @@ class DownloadTest < Minitest::Test
     assert_raises(ArgumentError) { download.mark_completed }
     assert_raises(ArgumentError) { download.mark_failed('boom') }
     assert_raises(ArgumentError) { download.mark_cancelled }
+    assert_raises(ArgumentError) { download.mark_resumed }
   end
 
   def test_transitions_preserve_created_at
@@ -215,124 +303,44 @@ class DownloadTest < Minitest::Test
     assert_equal '', Download.file_extension('noext')
   end
 
-  def test_resolve_filename_conflict_no_conflict
-    existing = []
+  # `numbered_destination` is the naming rule only. Deciding *which* number is
+  # free needs the database and the filesystem, so that loop lives in
+  # DownloadCoordinator (see test/managers/download_coordinator_test.rb).
 
-    result = Download.resolve_filename_conflict(
-      '/downloads/file.pdf',
-      existing
-    )
-
-    assert_equal '/downloads/file.pdf', result
+  def test_numbered_destination_zero_is_the_original_path
+    assert_equal '/downloads/file.pdf', Download.numbered_destination('/downloads/file.pdf', 0)
   end
 
-  def test_resolve_filename_conflict_one_conflict
-    existing = ['/downloads/file.pdf']
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/file.pdf',
-      existing
-    )
-
-    assert_equal '/downloads/file (1).pdf', result
+  def test_numbered_destination_inserts_the_counter_before_the_extension
+    assert_equal '/downloads/file (1).pdf', Download.numbered_destination('/downloads/file.pdf', 1)
+    assert_equal '/downloads/file (2).pdf', Download.numbered_destination('/downloads/file.pdf', 2)
   end
 
-  def test_resolve_filename_conflict_multiple_conflicts
-    existing = [
-      '/downloads/file.pdf',
-      '/downloads/file (1).pdf',
-      '/downloads/file (2).pdf'
-    ]
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/file.pdf',
-      existing
+  def test_numbered_destination_preserves_the_directory
+    assert_equal(
+      '/home/user/Downloads/file (1).pdf',
+      Download.numbered_destination('/home/user/Downloads/file.pdf', 1)
     )
-
-    assert_equal '/downloads/file (3).pdf', result
   end
 
-  def test_resolve_filename_conflict_gaps_in_numbering
-    # If user deleted file (2), we should use (2), not (4)
-    existing = [
-      '/downloads/file.pdf',
-      '/downloads/file (1).pdf',
-      '/downloads/file (3).pdf'
-    ]
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/file.pdf',
-      existing
-    )
-
-    assert_equal '/downloads/file (2).pdf', result
+  def test_numbered_destination_without_an_extension
+    assert_equal '/downloads/README (1)', Download.numbered_destination('/downloads/README', 1)
   end
 
-  def test_resolve_filename_conflict_no_extension
-    existing = [
-      '/downloads/README',
-      '/downloads/README (1)'
-    ]
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/README',
-      existing
+  def test_numbered_destination_with_a_compound_extension
+    # Known wart, carried over from the original implementation: only the last
+    # extension is treated as an extension.
+    assert_equal(
+      '/downloads/archive.tar (1).gz',
+      Download.numbered_destination('/downloads/archive.tar.gz', 1)
     )
-
-    assert_equal '/downloads/README (2)', result
   end
 
-  def test_resolve_filename_conflict_preserves_directory
-    existing = [
-      '/home/user/Downloads/file.pdf',
-      '/home/user/Downloads/file (1).pdf'
-    ]
-
-    result = Download.resolve_filename_conflict(
-      '/home/user/Downloads/file.pdf',
-      existing
+  def test_numbered_destination_on_an_already_numbered_name
+    assert_equal(
+      '/downloads/file (1) (2).pdf',
+      Download.numbered_destination('/downloads/file (1).pdf', 2)
     )
-
-    assert_equal '/home/user/Downloads/file (2).pdf', result
-  end
-
-  def test_resolve_filename_conflict_different_extension_not_conflict
-    # file.pdf and file.txt are different files, no conflict
-    existing = ['/downloads/file.txt']
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/file.pdf',
-      existing
-    )
-
-    assert_equal '/downloads/file.pdf', result
-  end
-
-  def test_resolve_filename_conflict_case_sensitive
-    # On case-sensitive filesystems, File.pdf != file.pdf
-    existing = ['/downloads/File.pdf']
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/file.pdf',
-      existing
-    )
-
-    assert_equal '/downloads/file.pdf', result
-  end
-
-  def test_resolve_filename_conflict_numbered_base_name
-    # If the base filename already has (1) in it, don't get confused
-    existing = [
-      '/downloads/file (1).pdf',
-      '/downloads/file (1) (1).pdf'
-    ]
-
-    result = Download.resolve_filename_conflict(
-      '/downloads/file (1).pdf',
-      existing
-    )
-
-    assert_equal '/downloads/file (1) (2).pdf', result
   end
 
   # ========================================

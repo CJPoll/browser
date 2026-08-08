@@ -23,6 +23,39 @@ the conventions this directory follows.
   remediation plan use `Managers::` (e.g. `Managers::QueueManager`). Expect a
   mix during the transition.
 
+## Periodic work: the manager owns the policy, the Framework owns the timer
+
+A manager exposes the operation and the interval; `BrowserWindow` schedules it
+on the GTK main loop. No background thread, nothing to shut down, and the
+operation stays directly testable.
+
+```ruby
+# Manager
+CLEANUP_INTERVAL_SECONDS = 300
+def cleanup_old_downloads(retention_days: RETENTION_DAYS)
+
+# Framework
+GLib::Timeout.add_seconds(DownloadCoordinator::CLEANUP_INTERVAL_SECONDS) do
+  @download_coordinator.cleanup_old_downloads
+  true # Keep repeating
+end
+```
+
+## A manager may default its own collaborators
+
+Framework must not name a Repository or an Adapter, so the manager provides a
+default for each and tests override it:
+
+```ruby
+def initialize(repository = Repositories::DownloadRepository.new,
+               clock: -> { Time.now },
+               file_system: Adapters::FileSystem.new)
+```
+
+`BrowserWindow` then writes `DownloadCoordinator.new` and never mentions the
+repository. The dependency is still injected -- it just has a production
+default in the one place that is allowed to know it.
+
 ## Managers own the clock
 
 Domain never reads the clock (see `lib/domain/CLAUDE.md`), so the manager that

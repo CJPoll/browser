@@ -35,6 +35,8 @@ require_relative 'domain/url_classifier'
 require_relative 'managers/article_extractor_js'
 require_relative 'managers/certificate_exception_manager'
 require_relative 'managers/autocomplete_manager'
+require_relative 'managers/download_coordinator'
+require_relative 'handlers/download_handler'
 require_relative 'handlers/markdown_handler'
 require_relative 'pdf_bookmark_processor'
 
@@ -52,7 +54,7 @@ class BrowserWindow < Gtk::Window
     # === Core Managers ===
     @history_manager = HistoryManager.new
     @queue_manager = QueueManager.new
-    @download_manager = DownloadManager.new
+    @download_coordinator = DownloadCoordinator.new
     @popup_manager = PopupManager.new
     @settings_manager = SettingsManager.new(data_dir: @data_dir)
     @session_manager = SessionManager.new(data_dir: @data_dir)
@@ -100,8 +102,20 @@ class BrowserWindow < Gtk::Window
     @web_context = WebContextManager.create(data_dir: @data_dir)
 
     # Handle downloads from web context
-    @web_context.signal_connect("download-started") do |_context, download|
-      handle_download(download)
+    @download_handler = DownloadHandler.new(
+      @web_context,
+      @download_coordinator,
+      on_download_started: ->(download) { on_download_started(download) },
+      on_download_progress: ->(download) { on_download_progress(download) },
+      on_download_finished: ->(download) { on_download_finished(download) },
+      on_download_failed: ->(download) { on_download_failed(download) }
+    )
+
+    # Discard download records past their retention period. Records only --
+    # the downloaded files themselves are never touched.
+    GLib::Timeout.add_seconds(DownloadCoordinator::CLEANUP_INTERVAL_SECONDS) do
+      @download_coordinator.cleanup_old_downloads
+      true # Keep repeating
     end
 
     # Create layout
@@ -118,7 +132,7 @@ class BrowserWindow < Gtk::Window
       on_downloads_toggle: -> { show_downloads_sidebar },
       get_current_tab: -> { current_tab },  # Safe: nil during init, but callbacks only fire during user interaction
       in_zen_mode: -> { @zen_mode },
-      get_download_state: -> { get_download_state }
+      get_download_state: -> { @download_coordinator.badge_state }
     }
     @toolbar_component = Toolbar.new(toolbar_callbacks)
     @toolbar = @toolbar_component.widget
@@ -222,26 +236,30 @@ class BrowserWindow < Gtk::Window
       show_queue_entry_context_menu(entry, event)
     }
 
-    download_list_view = DownloadListView.new(@download_manager)
-    download_list_view.on_open_location = ->(filepath) {
-      # Open file manager at the download location
-      system("xdg-open", File.dirname(filepath))
-    }
-    download_list_view.on_retry = ->(url, filename) {
-      # Retry download - navigate to URL which will trigger download again
-      current_tab.webview.load_uri(url) if current_tab
-    }
+    # The view renders downloads and reports intent; this window binds each
+    # intent to the coordinator or the download handler.
+    @download_list_view = DownloadListView.new(
+      get_downloads: -> { @download_coordinator.get_all_downloads },
+      on_pause: ->(download_id) { @download_handler.pause(download_id); update_download_badge },
+      on_resume: ->(download_id) { @download_handler.resume(download_id); update_download_badge },
+      on_cancel: ->(download_id) { @download_handler.cancel(download_id); update_download_badge },
+      on_remove: ->(download_id) { @download_coordinator.delete_download(download_id); update_download_badge },
+      on_open_location: ->(destination) {
+        # Open file manager at the download location
+        system("xdg-open", File.dirname(destination))
+      }
+    )
 
     # Create sidebar component
     sidebar_callbacks = {
       get_tabs: -> { [@tabs, @current_tab_index] },
       get_current_tab: -> { current_tab },
       get_queue_count: -> { @queue_manager.count },
-      get_download_count: -> { @download_manager.all.length },
+      get_download_count: -> { @download_coordinator.download_count },
       get_paned: -> { @paned }
     }
     @sidebar_component = Sidebar.new(
-      { tab_list_view: tab_list_view, history_list_view: history_list_view, queue_list_view: queue_list_view, download_list_view: download_list_view },
+      { tab_list_view: tab_list_view, history_list_view: history_list_view, queue_list_view: queue_list_view, download_list_view: @download_list_view },
       sidebar_callbacks,
       initial_width: (1200 * @sidebar_width_ratio).to_i
     )
@@ -377,7 +395,6 @@ class BrowserWindow < Gtk::Window
     signal_connect("destroy") do
       # Stop the background workers
       @queue_metadata_worker.stop
-      @download_manager.stop
 
       # Save session and settings
       save_current_session
@@ -1727,86 +1744,72 @@ class BrowserWindow < Gtk::Window
   # Download Management
   # ========================================
 
-  # Handles a download request from WebKit
+  # Shortest interval between two progress redraws of the same download
+  DOWNLOAD_UI_UPDATE_INTERVAL = 2.0
+
+  # Called when DownloadHandler has recorded a newly started download
   #
-  # @param download [WebKit2Gtk::Download] The download object
-  def handle_download(download)
-    # Get download info
-    request = download.request
-    url = request.uri
-    response = download.response
-    uri_path = URI.parse(url).path
-    suggested_filename = response&.suggested_filename ||
-                         (uri_path && !uri_path.empty? ? File.basename(uri_path) : "download")
+  # @param download [Download] The started download
+  def on_download_started(download)
+    download_ui_updates[download.id] = Time.at(0)
+    refresh_downloads_ui
+  end
 
-    # Add to download manager
-    download_id = @download_manager.add(url, suggested_filename, nil)
+  # Called for each progress update, throttled before it reaches the widgets
+  #
+  # @param download [Download] The download with its latest byte counts
+  def on_download_progress(download)
+    now = Time.now
+    last_update = download_ui_updates[download.id] || Time.at(0)
+    return if now - last_update < DOWNLOAD_UI_UPDATE_INTERVAL
 
-    # Set download destination
-    destination_path = File.join(@download_manager.download_dir, suggested_filename)
-    download.destination = "file://#{destination_path}"
+    download_ui_updates[download.id] = now
 
-    # Register download object for pause/cancel operations
-    download_list_view = @sidebar_component.instance_variable_get(:@view_components)[:download_list_view]
-    download_list_view.register_download(download_id, download)
-
-    # Track last UI update time for throttling (max once per 2 seconds)
-    @download_ui_updates ||= {}
-    @download_ui_updates[download_id] = Time.at(0)
-
-    # Track progress
-    download.signal_connect("received-data") do |dl, data_length|
-      @download_manager.update_progress(download_id, dl.received_data_length, DownloadManager::STATES[:active])
-
-      # Throttle UI updates to once every 2 seconds
-      now = Time.now
-      if now - @download_ui_updates[download_id] >= 2.0
-        @download_ui_updates[download_id] = now
-
-        # Update UI
-        if @sidebar_component.mode == :downloads
-          total_size = dl.response&.content_length || 0
-          speed = calculate_download_speed(download_id, dl.received_data_length)
-          download_list_view.update_progress(download_id, dl.received_data_length, total_size, speed)
-        end
-
-        # Update toolbar badge
-        update_download_badge
-      end
+    if @sidebar_component.mode == :downloads
+      speed = calculate_download_speed(download.id, download.bytes_received)
+      @download_list_view.update_progress(
+        download.id,
+        download.bytes_received,
+        download.total_bytes || 0,
+        speed
+      )
     end
 
-    # Handle completion
-    download.signal_connect("finished") do
-      @download_manager.update_state(download_id, DownloadManager::STATES[:completed])
-      download_list_view.unregister_download(download_id)
+    update_download_badge
+  end
 
-      # Refresh UI
-      @sidebar_component.refresh_current_view if @sidebar_component.mode == :downloads
-      update_download_badge
+  # Called when a download has finished successfully
+  #
+  # @param download [Download] The completed download
+  def on_download_finished(download)
+    forget_download_progress(download.id)
+    refresh_downloads_ui
+    show_download_complete_notification(download.basename, download.destination)
+  end
 
-      # Show completion notification
-      show_download_complete_notification(suggested_filename, destination_path)
+  # Called when a download has failed
+  #
+  # @param download [Download] The failed download
+  def on_download_failed(download)
+    forget_download_progress(download.id)
+    refresh_downloads_ui
+    warn "Download failed: #{download.error_message}"
+  end
 
-      puts "Download completed: #{suggested_filename}"
-    end
-
-    # Handle failure
-    download.signal_connect("failed") do |_dl, error|
-      @download_manager.mark_failed(download_id, error.message)
-      download_list_view.unregister_download(download_id)
-
-      # Refresh UI
-      @sidebar_component.refresh_current_view if @sidebar_component.mode == :downloads
-      update_download_badge
-
-      puts "Download failed: #{error.message}"
-    end
-
-    puts "Download started: #{suggested_filename}"
-
-    # Refresh downloads sidebar if visible
+  # Redraws the downloads sidebar (when visible) and the toolbar badge
+  def refresh_downloads_ui
     @sidebar_component.refresh_current_view if @sidebar_component.mode == :downloads
     update_download_badge
+  end
+
+  # Last redraw time per download, for progress throttling
+  def download_ui_updates
+    @download_ui_updates ||= {}
+  end
+
+  def forget_download_progress(download_id)
+    download_ui_updates.delete(download_id)
+    @download_speed_tracker&.delete(download_id)
   end
 
   # Calculates download speed in bytes/sec
@@ -1832,29 +1835,12 @@ class BrowserWindow < Gtk::Window
     speed
   end
 
-  # Gets the current download state for toolbar badge
-  #
-  # @return [Symbol] :none, :active, :paused, or :failed
-  def get_download_state
-    active = @download_manager.active
-
-    return :none if active.empty?
-
-    # Check for failed downloads
-    return :failed if active.any? { |d| d['state'] == DownloadManager::STATES[:failed] }
-
-    # Check for paused downloads
-    return :paused if active.any? { |d| d['state'] == DownloadManager::STATES[:paused] }
-
-    # Active downloads
-    :active
-  end
-
   # Updates the toolbar download button badge
   def update_download_badge
-    state = get_download_state
-    count = @download_manager.active.length
-    @toolbar_component.update_download_badge(state, count)
+    @toolbar_component.update_download_badge(
+      @download_coordinator.badge_state,
+      @download_coordinator.active_download_count
+    )
   end
 
   # ========================================

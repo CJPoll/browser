@@ -41,6 +41,23 @@ class MockDownloadRepository
   def delete(id)
     !!@downloads.delete(id)
   end
+
+  def delete_older_than(days)
+    @deleted_older_than = days
+  end
+
+  attr_reader :deleted_older_than
+end
+
+# Stands in for the filesystem so tests never depend on what is really on disk.
+class MockFileSystem
+  def initialize(existing = [])
+    @existing = existing
+  end
+
+  def exist?(path)
+    @existing.include?(path)
+  end
 end
 
 # Controllable clock so timestamps written by the coordinator are assertable.
@@ -68,7 +85,21 @@ class DownloadCoordinatorTest < Minitest::Test
   def setup
     @repository = MockDownloadRepository.new
     @clock = TestClock.new(START_TIME)
-    @coordinator = DownloadCoordinator.new(@repository, clock: @clock)
+    @file_system = MockFileSystem.new
+    @coordinator = DownloadCoordinator.new(
+      @repository,
+      clock: @clock,
+      file_system: @file_system
+    )
+  end
+
+  # Builds a coordinator whose filesystem already holds the given paths.
+  def coordinator_with_files_on_disk(*paths)
+    DownloadCoordinator.new(
+      @repository,
+      clock: @clock,
+      file_system: MockFileSystem.new(paths)
+    )
   end
 
   def test_start_download_creates_download_record
@@ -99,6 +130,44 @@ class DownloadCoordinatorTest < Minitest::Test
 
     assert_equal '/tmp/file.pdf', download1.destination
     assert_equal '/tmp/file (1).pdf', download2.destination
+  end
+
+  def test_start_download_keeps_counting_past_the_first_conflict
+    3.times { @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf') }
+
+    fourth = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+
+    assert_equal '/tmp/file (3).pdf', fourth.destination
+  end
+
+  def test_start_download_fills_gaps_in_the_numbering
+    first = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    second = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.delete_download(second.id)
+
+    replacement = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+
+    assert_equal '/tmp/file.pdf', first.destination
+    assert_equal '/tmp/file (1).pdf', replacement.destination
+  end
+
+  def test_start_download_avoids_files_already_on_disk
+    # A file can exist on disk without a database row -- put there by another
+    # program, or left behind after the history was cleared. Never clobber it.
+    coordinator = coordinator_with_files_on_disk('/tmp/file.pdf', '/tmp/file (1).pdf')
+
+    download = coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+
+    assert_equal '/tmp/file (2).pdf', download.destination
+  end
+
+  def test_start_download_leaves_an_unused_destination_alone
+    coordinator = coordinator_with_files_on_disk('/tmp/other.pdf')
+
+    download = coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+
+    assert_equal '/tmp/file.pdf', download.destination
   end
 
   def test_update_progress
@@ -179,6 +248,139 @@ class DownloadCoordinatorTest < Minitest::Test
     result = @coordinator.cancel_download(download.id)
 
     assert_nil result, "Cannot cancel a completed download"
+  end
+
+  # ========================================
+  # Pause and Resume
+  # ========================================
+
+  def test_pause_download_keeps_the_bytes_received
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.update_progress(download.id, bytes_received: 512, total_bytes: 1024)
+
+    paused = @coordinator.pause_download(download.id)
+
+    assert_equal :paused, paused.state
+    assert_equal 512, paused.bytes_received
+    assert_equal :paused, @coordinator.get_download(download.id).state
+  end
+
+  def test_pause_returns_nil_for_a_download_that_is_not_running
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.mark_completed(download.id)
+
+    assert_nil @coordinator.pause_download(download.id)
+  end
+
+  def test_pause_returns_nil_for_nonexistent_download
+    assert_nil @coordinator.pause_download(999)
+  end
+
+  def test_resume_restarts_the_transfer_to_the_same_destination
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.update_progress(download.id, bytes_received: 512, total_bytes: 1024)
+    @coordinator.pause_download(download.id)
+    @clock.advance(60)
+
+    resumed = @coordinator.resume_download(download.id)
+
+    assert_equal :in_progress, resumed.state
+    assert_equal 0, resumed.bytes_received, "A resumed download starts over"
+    assert_equal '/tmp/file.pdf', resumed.destination
+    assert_equal START_TIME + 60, resumed.started_at
+  end
+
+  def test_resume_reuses_the_record_rather_than_creating_a_second_one
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.pause_download(download.id)
+
+    resumed = @coordinator.resume_download(download.id)
+
+    assert_equal download.id, resumed.id
+    assert_equal 1, @coordinator.get_all_downloads.length
+  end
+
+  def test_resume_retries_a_failed_download
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.mark_failed(download.id, 'Connection reset')
+    @clock.advance(10)
+
+    resumed = @coordinator.resume_download(download.id)
+
+    assert_equal :in_progress, resumed.state
+    assert_nil resumed.error_message
+  end
+
+  def test_resume_returns_nil_for_a_running_download
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.update_progress(download.id, bytes_received: 10, total_bytes: 1024)
+
+    assert_nil @coordinator.resume_download(download.id)
+  end
+
+  def test_resume_returns_nil_for_nonexistent_download
+    assert_nil @coordinator.resume_download(999)
+  end
+
+  def test_a_paused_download_can_still_be_cancelled
+    download = @coordinator.start_download('https://example.com/file.pdf', '/tmp/file.pdf')
+    @coordinator.pause_download(download.id)
+    @clock.advance(5)
+
+    cancelled = @coordinator.cancel_download(download.id)
+
+    assert_equal :cancelled, cancelled.state
+    assert_equal START_TIME + 5, cancelled.completed_at
+  end
+
+  # ========================================
+  # Badge State and Counts
+  # ========================================
+
+  def test_badge_state_reports_no_downloads
+    assert_equal :none, @coordinator.badge_state
+    assert_equal 0, @coordinator.active_download_count
+  end
+
+  def test_badge_state_reports_running_downloads
+    @coordinator.start_download('https://example.com/a.pdf', '/tmp/a.pdf')
+    @coordinator.start_download('https://example.com/b.pdf', '/tmp/b.pdf')
+
+    assert_equal :active, @coordinator.badge_state
+    assert_equal 2, @coordinator.active_download_count
+  end
+
+  def test_badge_state_reports_paused_downloads
+    running = @coordinator.start_download('https://example.com/a.pdf', '/tmp/a.pdf')
+    @coordinator.start_download('https://example.com/b.pdf', '/tmp/b.pdf')
+    @coordinator.pause_download(running.id)
+
+    assert_equal :paused, @coordinator.badge_state
+  end
+
+  def test_download_count_includes_finished_downloads
+    completed = @coordinator.start_download('https://example.com/a.pdf', '/tmp/a.pdf')
+    @coordinator.mark_completed(completed.id)
+    @coordinator.start_download('https://example.com/b.pdf', '/tmp/b.pdf')
+
+    assert_equal 2, @coordinator.download_count
+    assert_equal 1, @coordinator.active_download_count
+  end
+
+  # ========================================
+  # Retention
+  # ========================================
+
+  def test_cleanup_old_downloads_uses_the_default_retention
+    @coordinator.cleanup_old_downloads
+
+    assert_equal DownloadCoordinator::RETENTION_DAYS, @repository.deleted_older_than
+  end
+
+  def test_cleanup_old_downloads_accepts_an_explicit_retention
+    @coordinator.cleanup_old_downloads(retention_days: 7)
+
+    assert_equal 7, @repository.deleted_older_than
   end
 
   def test_get_download

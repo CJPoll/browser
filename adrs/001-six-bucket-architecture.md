@@ -112,10 +112,15 @@ Current classes that already conform:
 | `lib/domain/external_schemes.rb` | Domain (conforms) |
 | `lib/domain/oauth_popup.rb` | Domain (conforms) |
 | `lib/domain/tag_name.rb` | Domain (conforms) |
+| `lib/domain/download_badge.rb` | Domain (conforms) |
+| `lib/domain/download_controls.rb` | Domain (conforms) |
 | `lib/repositories/download_repository.rb` | Repositories |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
+| `lib/adapters/file_system.rb` | Adapters |
 | `lib/managers/autocomplete_manager.rb` | Managers |
 | `lib/managers/download_coordinator.rb` | Managers |
+| `lib/handlers/download_handler.rb` | Framework (WebKit signals -> Manager) |
+| `lib/ui/download_list_view.rb` | UI (data in, intent callbacks out) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are
@@ -129,7 +134,7 @@ different tables with different semantics:
 | `lib/managers/certificate_exception_manager.rb` | `Repositories::CertificateExceptionRepository` (`certificate_exceptions`) |
 | `history_manager.rb` (root) | `Repositories::HistoryRepository` (`sites`, `pages`, `visits`); its authority logic already lives in `Domain::UrlHost` |
 | `queue_manager.rb` (root) | `Repositories::QueueRepository` (`queue_entries`) + `Repositories::TagRepository` (`tags`, `queue_entry_tag_assignments`), sharing `queue.db`; its URL matching and tag-name rules already live in `Domain::UrlMatcher` and `Domain::TagName` |
-| `download_manager.rb` (root) | Superseded by the existing `DownloadRepository` + `DownloadCoordinator` stack once wired in |
+| `download_manager.rb` (root) | Deleted -- superseded by `Repositories::DownloadRepository` + `DownloadCoordinator`, wired in through `DownloadHandler` |
 | `lib/managers/session_manager.rb` | Adapters (JSON file store, not a database) |
 | `lib/managers/settings_manager.rb` | Adapters (JSON file store, not a database) |
 | `lib/managers/auto_tagger.rb` | Domain (already pure) |

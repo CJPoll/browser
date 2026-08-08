@@ -1,14 +1,20 @@
 # frozen_string_literal: true
 
-require_relative '../managers/download_coordinator'
+require 'fileutils'
+require 'set'
+require 'uri'
 
 # DownloadHandler connects WebKit download signals to the DownloadCoordinator.
 #
-# This is a UI/Handler layer component that:
-# - Listens for WebKit download events
-# - Delegates business logic to DownloadCoordinator
-# - Does NOT call repository directly
-# - Handles user interactions (cancel, open file, etc.)
+# This is a Framework component that:
+# - Owns the WebKit download objects and the signal wiring
+# - Delegates every state decision to DownloadCoordinator
+# - Does NOT call a repository or hold any persistence logic
+# - Reports progress to its owner through callbacks
+#
+# Pause and resume: WebKit cannot suspend a transfer. Pausing therefore
+# cancels the WebKit download and records :paused; resuming starts a fresh
+# transfer to the same destination and reuses the existing record.
 #
 # Thread Safety: All WebKit callbacks run on the GTK main thread.
 class DownloadHandler
@@ -32,8 +38,16 @@ class DownloadHandler
     @on_download_finished = on_download_finished
     @on_download_failed = on_download_failed
 
-    # Map WebKit::Download -> download_id for tracking
+    # download_id => WebKit2Gtk::Download, for pause/resume/cancel
     @webkit_downloads = {}
+
+    # IDs we stopped on purpose. WebKit reports a cancelled transfer as a
+    # failure, and that failure must not overwrite the state we just recorded.
+    @intentionally_stopped = Set.new
+
+    # A record waiting to be attached to the next matching download-started
+    # event, set while a resume is in flight.
+    @record_awaiting_transfer = nil
 
     setup_download_signal
   end
@@ -41,49 +55,51 @@ class DownloadHandler
   # Cancels a download
   #
   # @param download_id [Integer] Download ID to cancel
-  # @return [Boolean] True if cancelled, false otherwise
+  # @return [Download, nil] The cancelled download, or nil if it could not be cancelled
   def cancel(download_id)
-    download = @coordinator.cancel_download(download_id)
-    return false unless download
-
-    # Cancel the WebKit download if still active
-    webkit_download = @webkit_downloads.key(download_id)
-    webkit_download&.cancel
-
-    true
+    record_transition(download_id) { @coordinator.cancel_download(download_id) }
   end
 
-  # Gets all downloads
+  # Pauses a download
   #
-  # @return [Array<Download>] All downloads
-  def get_all_downloads
-    @coordinator.get_all_downloads
+  # @param download_id [Integer] Download ID to pause
+  # @return [Download, nil] The paused download, or nil if it could not be paused
+  def pause(download_id)
+    record_transition(download_id) { @coordinator.pause_download(download_id) }
   end
 
-  # Gets active downloads
+  # Resumes (or retries) a download by starting a fresh transfer
   #
-  # @return [Array<Download>] Active downloads
-  def get_active_downloads
-    @coordinator.get_active_downloads
-  end
+  # @param download_id [Integer] Download ID to resume
+  # @return [Download, nil] The restarted download, or nil if it could not be resumed
+  def resume(download_id)
+    download = @coordinator.resume_download(download_id)
+    return nil unless download
 
-  # Gets a specific download
-  #
-  # @param download_id [Integer] Download ID
-  # @return [Download, nil] Download or nil
-  def get_download(download_id)
-    @coordinator.get_download(download_id)
-  end
+    @record_awaiting_transfer = download
+    @web_context.download_uri(download.url)
 
-  # Deletes a download record
-  #
-  # @param download_id [Integer] Download ID
-  # @return [Boolean] True if deleted
-  def delete_download(download_id)
-    @coordinator.delete_download(download_id)
+    download
   end
 
   private
+
+  # Applies a coordinator transition and stops the underlying transfer.
+  def record_transition(download_id)
+    download = yield
+    return nil unless download
+
+    stop_transfer(download_id)
+    download
+  end
+
+  def stop_transfer(download_id)
+    webkit_download = @webkit_downloads.delete(download_id)
+    return unless webkit_download
+
+    @intentionally_stopped << download_id
+    webkit_download.cancel
+  end
 
   def setup_download_signal
     @web_context.signal_connect('download-started') do |_context, webkit_download|
@@ -93,42 +109,43 @@ class DownloadHandler
   end
 
   def handle_download_started(webkit_download)
-    # Get suggested filename and default download directory
-    request = webkit_download.request
-    url = request.uri
+    url = webkit_download.request.uri
 
-    # Determine destination path
-    destination = determine_destination(webkit_download)
+    download = claim_awaiting_record(url) ||
+               @coordinator.start_download(url, determine_destination(webkit_download))
 
-    # Create download record via coordinator
-    download = @coordinator.start_download(url, destination)
+    @webkit_downloads[download.id] = webkit_download
 
-    # Track WebKit download -> ID mapping
-    @webkit_downloads[webkit_download] = download.id
-
-    # Set the destination on the WebKit download
-    # WebKit expects file:// URI for destination
+    # WebKit expects a file:// URI for the destination
     webkit_download.destination = "file://#{download.destination}"
 
-    # Connect progress signals
     setup_progress_signals(webkit_download, download.id)
 
-    # Notify listener
     @on_download_started&.call(download)
   end
 
+  # Attaches a resumed record to the transfer it asked for.
+  #
+  # The window is a single download-started event, and the URL must match, so
+  # an unrelated download starting in between cannot claim the record.
+  def claim_awaiting_record(url)
+    record = @record_awaiting_transfer
+    @record_awaiting_transfer = nil
+
+    return nil unless record && record.url == url
+
+    record
+  end
+
   def setup_progress_signals(webkit_download, download_id)
-    # Progress updates
     webkit_download.signal_connect('received-data') do |_download, _data_length|
       handle_progress(webkit_download, download_id)
     end
 
-    # Completion
     webkit_download.signal_connect('finished') do |_download|
       handle_finished(download_id)
     end
 
-    # Failure
     webkit_download.signal_connect('failed') do |_download, error|
       handle_failed(download_id, error)
     end
@@ -136,9 +153,8 @@ class DownloadHandler
 
   def handle_progress(webkit_download, download_id)
     bytes_received = webkit_download.received_data_length
-    # WebKit provides estimated total, may be -1 if unknown
-    response = webkit_download.response
-    total_bytes = response&.content_length
+    # WebKit provides an estimated total, which may be -1 if unknown
+    total_bytes = webkit_download.response&.content_length
     total_bytes = nil if total_bytes && total_bytes < 0
 
     download = @coordinator.update_progress(
@@ -151,35 +167,31 @@ class DownloadHandler
   end
 
   def handle_finished(download_id)
+    @intentionally_stopped.delete(download_id)
+    @webkit_downloads.delete(download_id)
+
     download = @coordinator.mark_completed(download_id)
-
-    # Cleanup tracking
-    @webkit_downloads.delete_if { |_k, v| v == download_id }
-
     @on_download_finished&.call(download) if download
   end
 
   def handle_failed(download_id, error)
+    # A transfer we stopped ourselves already has its state recorded.
+    return if @intentionally_stopped.delete?(download_id)
+
+    @webkit_downloads.delete(download_id)
+
     error_message = error&.message || 'Unknown error'
     download = @coordinator.mark_failed(download_id, error_message)
-
-    # Cleanup tracking
-    @webkit_downloads.delete_if { |_k, v| v == download_id }
 
     @on_download_failed&.call(download) if download
   end
 
   def determine_destination(webkit_download)
-    # Get suggested filename from WebKit
     suggested_filename = webkit_download.response&.suggested_filename
     suggested_filename ||= File.basename(URI.parse(webkit_download.request.uri).path)
     suggested_filename = 'download' if suggested_filename.nil? || suggested_filename.empty?
 
-    # Use XDG download directory or ~/Downloads
-    download_dir = ENV['XDG_DOWNLOAD_DIR'] ||
-                   File.join(Dir.home, 'Downloads')
-
-    # Ensure directory exists
+    download_dir = ENV['XDG_DOWNLOAD_DIR'] || File.join(Dir.home, 'Downloads')
     FileUtils.mkdir_p(download_dir) unless Dir.exist?(download_dir)
 
     File.join(download_dir, suggested_filename)

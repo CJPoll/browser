@@ -18,13 +18,25 @@ class Download
   STATES = [
     :pending,      # Download created but not started
     :in_progress,  # Download in progress
+    :paused,       # Transfer stopped by the user, destination reserved
     :completed,    # Download finished successfully
     :failed,       # Download failed
     :cancelled     # Download cancelled by user
   ].freeze
 
+  # States in which the download still occupies the active list
+  ACTIVE_STATES = [:pending, :in_progress, :paused].freeze
+
   # States that can be cancelled
-  CANCELLABLE_STATES = [:pending, :in_progress].freeze
+  CANCELLABLE_STATES = [:pending, :in_progress, :paused].freeze
+
+  # States from which the transfer can be stopped
+  PAUSABLE_STATES = [:pending, :in_progress].freeze
+
+  # States from which a fresh transfer can be started to the same destination.
+  # Resume (paused) and Retry (failed) are the same transition: WebKit cannot
+  # continue a partial download, so both restart it from zero bytes.
+  RESUMABLE_STATES = [:paused, :failed].freeze
 
   attr_reader :id, :url, :destination, :state, :bytes_received, :total_bytes,
               :error_message, :created_at, :started_at, :completed_at
@@ -97,6 +109,20 @@ class Download
     CANCELLABLE_STATES.include?(@state)
   end
 
+  # Check if the transfer can be stopped
+  #
+  # @return [Boolean] True if download can be paused
+  def can_pause?
+    PAUSABLE_STATES.include?(@state)
+  end
+
+  # Check if a fresh transfer can be started to the same destination
+  #
+  # @return [Boolean] True if download can be resumed or retried
+  def can_resume?
+    RESUMABLE_STATES.include?(@state)
+  end
+
   # Check if download is in a terminal state
   #
   # @return [Boolean] True if download is completed, failed, or cancelled
@@ -108,7 +134,7 @@ class Download
   #
   # @return [Boolean] True if download is pending or in_progress
   def active?
-    [:pending, :in_progress].include?(@state)
+    ACTIVE_STATES.include?(@state)
   end
 
   # Returns a new Download marked as completed
@@ -142,6 +168,34 @@ class Download
   # @return [Download] New download instance with in_progress state
   def mark_started(now:)
     with(state: :in_progress, started_at: now)
+  end
+
+  # Returns a new Download marked as paused
+  #
+  # The bytes received so far are kept so the UI can report progress, but no
+  # timestamp is written: the schema has no paused_at column, and adding one
+  # would be a schema change. This transition therefore needs no clock.
+  #
+  # @return [Download] New download instance with paused state
+  def mark_paused
+    with(state: :paused)
+  end
+
+  # Returns a new Download restarted from the beginning
+  #
+  # Resume and retry both start a fresh transfer to the same destination, so
+  # the byte count restarts at zero and any previous error is cleared.
+  #
+  # @param now [Time] Time at which the new transfer started
+  # @return [Download] New download instance with in_progress state
+  def mark_resumed(now:)
+    with(
+      state: :in_progress,
+      started_at: now,
+      bytes_received: 0,
+      error_message: nil,
+      completed_at: nil
+    )
   end
 
   # Calculates progress percentage
@@ -189,26 +243,24 @@ class Download
     @id == other.id
   end
 
-  # Resolves filename conflicts by adding (1), (2), etc.
+  # Names the counter-th alternative to a destination path
+  #
+  # Counter 0 is the path itself; higher counters insert " (n)" before the
+  # extension. This is the naming rule only -- deciding which counter is free
+  # requires knowing what already exists, which is the caller's job (see
+  # DownloadCoordinator#resolve_destination).
   #
   # @param filepath [String] Full path to file
-  # @param existing_paths [Array<String>] List of existing full paths
-  # @return [String] New full path with conflict suffix if needed
-  def self.resolve_filename_conflict(filepath, existing_paths)
-    return filepath unless existing_paths.include?(filepath)
+  # @param counter [Integer] Alternative number, 0 for the original path
+  # @return [String] Full path for that alternative
+  def self.numbered_destination(filepath, counter)
+    return filepath if counter.zero?
 
     directory = File.dirname(filepath)
     basename = File.basename(filepath, ".*")
     extension = File.extname(filepath)
 
-    # Try suffixes (1), (2), (3), etc.
-    counter = 1
-    loop do
-      new_filename = "#{basename} (#{counter})#{extension}"
-      new_path = File.join(directory, new_filename)
-      return new_path unless existing_paths.include?(new_path)
-      counter += 1
-    end
+    File.join(directory, "#{basename} (#{counter})#{extension}")
   end
 
   # Extracts filename without any extensions

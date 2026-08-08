@@ -18,7 +18,7 @@ class Toolbar
   #   - :on_downloads_toggle => -> { ... }
   #   - :get_current_tab => -> { Tab or nil }
   #   - :in_zen_mode => -> { true/false }
-  #   - :get_download_state => -> { :none, :active, :paused, :failed }
+  #   - :get_download_state => -> { :none, :active, :paused }
   def initialize(callbacks)
     @callbacks = callbacks
     @autocomplete_callback = nil

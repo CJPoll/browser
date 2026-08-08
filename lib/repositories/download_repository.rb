@@ -48,11 +48,11 @@ module Repositories
       rows.map { |row| build_download(row) }
     end
 
-    # Find active downloads (pending or in_progress).
+    # Find active downloads (pending, in_progress or paused).
     # Returns array of Download objects.
     def find_active
       rows = @db.execute(
-        "SELECT * FROM downloads WHERE state IN ('pending', 'in_progress') ORDER BY created_at DESC"
+        "SELECT * FROM downloads WHERE state IN ('pending', 'in_progress', 'paused') ORDER BY created_at DESC"
       )
       rows.map { |row| build_download(row) }
     end
