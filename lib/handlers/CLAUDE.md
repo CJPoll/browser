@@ -68,6 +68,35 @@ so an unrelated download starting in between cannot steal the record. Any
 scheme that leaves the flag set indefinitely will eventually attach the wrong
 transfer.
 
+## Guarding against the signals your own load provokes
+
+`MarkdownHandler` renders a `.md` URL itself and calls `load_html`, which
+makes WebKit ask `decide-policy` about the *same* URL again. Without a guard
+the handler would render it a second time -- refetching the document on every
+pass.
+
+The guard is a set of URLs currently being loaded, and it is Framework state:
+it exists because of how WebKit re-enters, and the manager it delegates to
+does not know the signal exists. Clearing it has to wait for the main loop, so
+the scheduler is injected the same way the metadata worker's is:
+
+```ruby
+MAIN_THREAD_SCHEDULER = lambda do |&block|
+  GLib::Idle.add { block.call; false }
+end
+
+def initialize(manager: Managers::MarkdownManager.new, scheduler: MAIN_THREAD_SCHEDULER)
+```
+
+A test then holds the scheduled block and asserts both halves -- that a second
+navigation while the load is in flight is ignored, and that running the
+scheduled work lets the next one through. Same seam as
+`Managers::QueueMetadataWorker`; see `lib/managers/CLAUDE.md`.
+
+This is the general shape for "signals you provoke yourself" (above): record
+the guard before the call that triggers the signal, and clear it on the main
+loop rather than inline.
+
 ## Testing
 
 Handlers are tested with small hand-written fakes for the WebKit objects (a

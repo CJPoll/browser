@@ -213,6 +213,23 @@ already a use case; reach for a repository when you need storage that no
 manager exposes. A manager that wires up another manager's repositories is
 the shape to avoid -- it means the first manager's rules can be bypassed.
 
+## Per-widget state: name the widget with a key, never hold it
+
+`Managers::MarkdownManager` remembers what each webview is showing (which
+document, rendered or source) without ever seeing a webview: the handler
+passes `webview.object_id` as an opaque `view_key`, and the manager treats it
+as a hash key it never interprets.
+
+That one indirection is what lets the manager be tested with `:view_1` and
+`:view_2` and no GTK at all, while the Framework keeps the only reference to
+the widget -- which it has to, since it is also the only bucket that knows
+when the widget goes away and the state should be forgotten.
+
+The pair to get right is `render`/`forget`: state keyed by a widget leaks
+unless the Framework tells the manager the widget has navigated away. Give the
+manager the explicit `forget(view_key)` rather than any cleverness about
+liveness; a bucket that cannot see the widget cannot notice it dying.
+
 ## Fetch the state, let Domain decide, apply the decision
 
 The manager's body should read as three steps with no branching of its own:

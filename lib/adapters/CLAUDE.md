@@ -64,6 +64,25 @@ and the shorter timeout for an asset the entry can do without.
 Parsing stays out. `fetch_api` returns the JSON body as a string;
 `Domain::PageMetadata` reads it. The adapter moves bytes.
 
+`fetch_document` is the exception that follows redirects, because a document
+the user asked to read is worth chasing to where it moved. Redirect-following
+belongs *here* rather than in a caller: it is still moving bytes, and a cap is
+mandatory -- a server that redirects to itself would otherwise be followed
+until the process dies. Answering nil past `MAX_REDIRECTS` lands in the same
+"nothing to fetch" case every caller already handles.
+
+## An adapter may compose another adapter
+
+`Adapters::ContentFetcher` answers "the bytes behind this URL" for `file://`
+as well as `http(s)://`, and reaches `Adapters::HttpFetcher` for the second.
+That is one effect with two mechanisms, not two buckets: the manager above it
+should not have to branch on scheme to decide which adapter to call.
+
+The split that does matter is the one already stated above -- nil means "there
+is nothing to fetch" (no such file, a server that refused, a scheme this
+cannot read) and an exception means "the attempt failed". Only the manager
+knows whether the latter deserves a warning.
+
 ## File-store adapters
 
 `Adapters::SessionStore` and `Adapters::SettingsStore` are the JSON

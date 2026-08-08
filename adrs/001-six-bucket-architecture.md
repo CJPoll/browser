@@ -169,6 +169,14 @@ Current classes that already conform:
 | `lib/domain/auto_tagger.rb` | Domain (rules arrive as data) |
 | `lib/domain/article_extractor_js.rb` | Domain (constant script module) |
 | `lib/managers/queue_metadata_worker.rb` | Managers (owns the thread and the order of the steps) |
+| `lib/adapters/content_fetcher.rb` | Adapters (file and HTTP bytes behind a URL) |
+| `lib/domain/markdown_document.rb` | Domain (what a markdown document says about itself) |
+| `lib/domain/markdown_renderer.rb` | Domain (markdown -> HTML page; Redcarpet is a pure transform) |
+| `lib/domain/markdown_styles.rb` | Domain (constant stylesheet module) |
+| `lib/domain/mermaid_script.rb` | Domain (constant script module) |
+| `lib/domain/markdown_view.rb` | Domain (the page to display, and the URI it stands for) |
+| `lib/managers/markdown_manager.rb` | Managers (render pipeline; view state keyed by an opaque handle) |
+| `lib/handlers/markdown_handler.rb` | Framework (intercepts `decide-policy`, loads what the manager returns) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are

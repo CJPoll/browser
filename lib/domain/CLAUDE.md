@@ -45,6 +45,8 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::IpcMessage` | what is another instance asking this one to open? |
 | `Domain::PageMetadata` | what does this page say about itself? |
 | `Domain::AutoTagger` | which tags do the rules give this entry? |
+| `Domain::MarkdownDocument` | what does this markdown document say about itself? |
+| `Domain::MarkdownRenderer` | what page does this markdown document become? |
 
 ## Presentation rules are Domain too
 
@@ -101,6 +103,32 @@ Two conventions came out of it:
   for a well-formed response that names neither title nor channel. Malformed
   is an accident; empty is an answer.
 
+## Payloads the browser ships are Domain, not files
+
+`Domain::ArticleExtractorJS`, `Domain::MarkdownStyles` and
+`Domain::MermaidScript` are nothing but constant strings behind a method:
+JavaScript to run in a page, CSS to wrap a document in. They are Domain
+because producing them reads nothing -- same call, same bytes -- and they are
+not files on disk because loading them would put an adapter and an IO failure
+mode in the path of something that cannot vary.
+
+Two conventions keep them honest:
+
+- **The payload is data; assembling the page is a function.** `MarkdownStyles`
+  answers with CSS and knows nothing about where it is inserted;
+  `Domain::MarkdownRenderer` builds the document around it. Otherwise every
+  payload grows a second job and stops being copy-pasteable.
+- **Move them verbatim, and prove it.** Relocating ~500 lines of CSS by hand
+  invites a lost blank line nobody notices until a PDF prints wrong. Extract
+  the heredocs with a script and assert the old and new methods return
+  identical strings before deleting the original -- a one-off comparison run
+  is cheaper than reviewing 500 lines twice.
+
+The same check is worth running on the *rendered* output: comparing the old
+and new pipeline's HTML byte for byte across a handful of documents (plain,
+mermaid, page break, no heading) is what turns "I think this is a pure move"
+into a fact.
+
 ## Rules that change often are data, not code
 
 The auto-tagging rules -- which channels and keywords earn which tag -- live in
@@ -112,6 +140,23 @@ The auto-tagging rules -- which channels and keywords earn which tag -- live in
 production passes parsed JSON through the same constructor. It uses `fetch`
 for the required fields, so a rule missing its `fields` raises at load rather
 than silently never matching.
+
+## A third-party library is Domain if the library is a pure transform
+
+`Domain::MarkdownRenderer` calls Redcarpet. That is allowed for the same
+reason `PageMetadata` may call `JSON.parse`: the gem turns text into text and
+touches nothing else. What decides the bucket is the *effect*, not whether the
+code is ours.
+
+Two things to watch when a gem lands in Domain:
+
+- **Do not share a stateful instance.** Redcarpet's renderer objects carry
+  state between calls, so `markdown_engine` builds a fresh one per render.
+  A memoised instance would make a document's HTML depend on what was
+  rendered before it -- which is exactly the purity claim being made.
+- **Keep the options next to the transform.** The dialect (tables, footnotes,
+  autolinks, heading anchors) is part of what the browser *means* by markdown,
+  so it is a Domain constant, and a test asserts each one still renders.
 
 ## Return a decision, not a side effect
 
