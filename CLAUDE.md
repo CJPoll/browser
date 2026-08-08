@@ -73,6 +73,11 @@ clock reads).
 - `favicon_manager.rb` - Favicon fetching with debouncing
 - `queue_metadata_worker.rb` - Background metadata fetching for queue
 
+**History** (`lib/repositories/` + `lib/managers/`):
+- `history_repository.rb` - the `sites`/`pages`/`visits` tables in `history.db`
+- `history_manager.rb` - visit recording (owns the clock and the
+  duplicate-arrival policy), search and autocomplete candidates
+
 **Queue** (`lib/repositories/` + `lib/managers/`):
 - `queue_database.rb` - shared `queue.db` connection, schema and migrations
 - `queue_repository.rb` / `tag_repository.rb` - the two tables behind it
@@ -80,7 +85,6 @@ clock reads).
 - `queue_navigation_manager.rb` - next/previous/remove-and-advance
 
 **External Components** (project root):
-- `history_manager.rb` - SQLite-based browsing history
 - `video_popout_window.rb` - Picture-in-Picture floating window (WIP)
 - `run` - Wrapper script for asdf environment setup
 

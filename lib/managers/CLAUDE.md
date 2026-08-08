@@ -179,3 +179,47 @@ five different symbols. Repositories underneath return booleans or nil
 manager translates. The translation is where "why not" lives -- an unknown
 entry and an unknown tag are both a false from the repository, and callers
 need to tell them apart.
+
+## Idempotence policy belongs to the manager, not the caller
+
+WebKit reports one page arrival more than once -- `load-changed` fires, then
+`notify::title` fires again when a single-page app rewrites the title.
+`BrowserWindow` used to carry a `@last_recorded_visit` key and an `unless`
+around each call site, which meant every new caller had to remember the rule.
+It now lives in `Managers::HistoryManager`, and the caller reads:
+
+```ruby
+if @history_manager.record_visit(uri, title) != :duplicate
+  @favicon_manager.fetch_and_save_favicon(uri) if @favicon_manager
+end
+```
+
+Two details worth copying:
+
+- The **symbol result is what makes the move possible**. `:recorded` /
+  `:duplicate` / `:invalid_url` lets the Framework keep the one thing that is
+  genuinely its business (fetching a favicon on a fresh arrival) without
+  knowing why a call was skipped.
+- **Record the key even when the input is rejected.** An unusable URL cannot
+  become usable on the next identical report, so remembering it keeps a warn
+  out of every signal. That is a decision, so it gets a comment and a test.
+
+## When a manager adds a policy, other tests must seed beneath it
+
+`AutocompleteManagerTest` built visit counts by recording the same URL fifty
+times. Once `HistoryManager` deduplicated consecutive identical visits, that
+seeding silently produced one visit and the ranking assertions went hollow.
+The fix is to seed through the **repository** and keep the manager as the
+object under test:
+
+```ruby
+# The manager deduplicates identical consecutive visits, which is exactly
+# what building up a visit count needs to bypass.
+def record_visit(url, title, times: 1)
+  authority = Domain::UrlHost.authority(URI.parse(url))
+  times.times { @repository.record_visit(url: url, authority: authority, title: title, now: NOW) }
+end
+```
+
+When you add a rule to a manager, grep for the tests that were using it as a
+convenient way to fill a database.

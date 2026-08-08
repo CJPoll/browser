@@ -35,6 +35,7 @@ require_relative 'domain/oauth_popup'
 require_relative 'domain/url_classifier'
 require_relative 'managers/article_extractor_js'
 require_relative 'managers/site_permission_manager'
+require_relative 'managers/history_manager'
 require_relative 'managers/autocomplete_manager'
 require_relative 'managers/download_coordinator'
 require_relative 'managers/queue_manager'
@@ -55,7 +56,7 @@ class BrowserWindow < Gtk::Window
     FileUtils.mkdir_p(@data_dir)
 
     # === Core Managers ===
-    @history_manager = HistoryManager.new
+    @history_manager = Managers::HistoryManager.new
     @queue_manager = Managers::QueueManager.new
     @queue_navigation_manager = Managers::QueueNavigationManager.new(@queue_manager)
     @download_coordinator = DownloadCoordinator.new
@@ -80,10 +81,6 @@ class BrowserWindow < Gtk::Window
     # === Zen Mode State ===
     @zen_mode = false
     @sidebar_visible_before_zen = true
-
-    # === History Tracking ===
-    # Track last recorded visit to avoid duplicates
-    @last_recorded_visit = nil
 
     # === Popup Notification Tracking ===
     # Track hosts with active notifications to avoid duplicates
@@ -226,7 +223,7 @@ class BrowserWindow < Gtk::Window
     history_list_view = HistoryListView.new(@history_manager,
                                              ->(favicon_data) { create_favicon_image(favicon_data) })
     history_list_view.on_history_item_selected = ->(visit) {
-      current_tab.webview.load_uri(visit['uri']) if current_tab
+      current_tab.webview.load_uri(visit.uri) if current_tab
     }
 
     queue_list_view = QueueListView.new(@queue_manager,
@@ -978,12 +975,9 @@ class BrowserWindow < Gtk::Window
       current_tab.title = title
       current_tab.uri = uri
 
-      # Only record if this is a different URI or title than last recorded
-      visit_key = "#{uri}|#{title}"
-      unless @last_recorded_visit == visit_key
-        @history_manager.record_visit(uri, title)
-        @last_recorded_visit = visit_key
-
+      # The manager keeps a repeat of the same URL and title from becoming a
+      # second visit; a fresh one is also when the favicon is worth fetching.
+      if @history_manager.record_visit(uri, title) != :duplicate
         # Try to fetch favicon for this page (important for SPAs like YouTube)
         @favicon_manager.fetch_and_save_favicon(uri) if @favicon_manager
       end
@@ -1261,12 +1255,9 @@ class BrowserWindow < Gtk::Window
       title = current_tab.webview.title
 
       if uri && !uri.empty?
-        # Only record if this is a different URI or title than last recorded
-        visit_key = "#{uri}|#{title}"
-        unless @last_recorded_visit == visit_key
-          @history_manager.record_visit(uri, title)
-          @last_recorded_visit = visit_key
-
+        # The manager keeps a repeat of the same URL and title from becoming a
+        # second visit; a fresh one is also when the favicon is worth fetching.
+        if @history_manager.record_visit(uri, title) != :duplicate
           # Try to fetch favicon for this page
           @favicon_manager.fetch_and_save_favicon(uri) if @favicon_manager
         end

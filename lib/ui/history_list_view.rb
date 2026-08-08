@@ -7,7 +7,8 @@ class HistoryListView
 
   # Creates a new history list view
   #
-  # @param history_manager [HistoryManager] History manager for querying visits
+  # @param history_manager [Managers::HistoryManager] History use cases, supplying
+  #   Domain::Visit and Domain::Page objects
   # @param favicon_image_creator [Proc] Proc that creates favicon images: ->(favicon_data) { Gtk::Image }
   def initialize(history_manager, favicon_image_creator)
     @history_manager = history_manager
@@ -28,7 +29,7 @@ class HistoryListView
     end
 
     # Callback invoked when history item is clicked
-    # Signature: ->(visit) { ... } where visit is a hash with 'uri' key
+    # Signature: ->(entry) { ... } where entry responds to #uri
     @on_history_item_selected = nil
 
     # Set up row activation handler
@@ -39,7 +40,7 @@ class HistoryListView
 
   # Sets callback to invoke when history item is selected
   #
-  # @param callback [Proc] Callback proc accepting visit hash: ->(visit) { ... }
+  # @param callback [Proc] Callback proc accepting the selected entry: ->(entry) { ... }
   # @return [void]
   def on_history_item_selected=(callback)
     @on_history_item_selected = callback
@@ -55,7 +56,6 @@ class HistoryListView
 
     # Get history items (search results or recent visits)
     if @search_query && !@search_query.empty?
-      # Use search results - need to convert to visit format
       pages = @history_manager.search(@search_query, limit)
 
       if pages.empty?
@@ -66,16 +66,13 @@ class HistoryListView
         @list_widget.add(no_results_label)
       else
         pages.each do |page|
-          # Convert page format to visit format for create_history_row
-          visit = {
-            'visit_id' => page['id'],  # Use page id as visit id for delete functionality
-            'uri' => page['uri'],
-            'page_title' => page['title'],
-            'visit_title' => page['title'],
-            'visited_at' => page['last_visited_at'],
-            'favicon' => nil  # Favicon not included in search results
-          }
-          row = create_history_row(visit)
+          # Known wart, preserved: the remove button on a search row passes the
+          # *page* id to delete_visit, so it deletes whichever visit happens to
+          # share that id. Search rows also carry no favicon, because the search
+          # projection does not select one.
+          row = create_history_row(page,
+                                   timestamp: page.last_visited_at,
+                                   delete_id: page.id)
           @list_widget.add(row)
         end
       end
@@ -84,7 +81,7 @@ class HistoryListView
       visits = @history_manager.recent_visits(limit)
 
       visits.each do |visit|
-        row = create_history_row(visit)
+        row = create_history_row(visit, timestamp: visit.visited_at, delete_id: visit.id)
         @list_widget.add(row)
       end
     end
@@ -94,11 +91,14 @@ class HistoryListView
 
   private
 
-  # Creates a list box row for a history visit
+  # Creates a list box row for a history entry
   #
-  # @param visit [Hash] Visit data with keys: 'uri', 'visit_title'/'page_title', 'favicon', 'visited_at'
+  # @param entry [Domain::Visit, Domain::Page] Entry to render; handed back to
+  #   the selection callback when the row is activated
+  # @param timestamp [Time, nil] When the entry was visited
+  # @param delete_id [Integer, nil] Visit id the remove button forgets
   # @return [Gtk::ListBoxRow] Configured row widget
-  def create_history_row(visit)
+  def create_history_row(entry, timestamp:, delete_id:)
     row = Gtk::ListBoxRow.new
 
     # Horizontal box for favicon + text content
@@ -109,7 +109,7 @@ class HistoryListView
     hbox.margin_end = 12
 
     # Favicon
-    favicon_image = @favicon_image_creator.call(visit['favicon'])
+    favicon_image = @favicon_image_creator.call(entry.favicon)
     favicon_image.valign = :start
     hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
 
@@ -117,7 +117,7 @@ class HistoryListView
     vbox = Gtk::Box.new(:vertical, 2)
 
     # Title
-    title = visit['visit_title'] || visit['page_title'] || visit['uri']
+    title = entry.display_title.to_s
     title_label = Gtk::Label.new
     title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
     title_label.halign = :start
@@ -125,7 +125,7 @@ class HistoryListView
     vbox.pack_start(title_label, expand: false, fill: false, padding: 0)
 
     # URL
-    url_label = Gtk::Label.new(visit['uri'])
+    url_label = Gtk::Label.new(entry.uri)
     url_label.halign = :start
     url_label.ellipsize = :middle
     url_label.max_width_chars = 40
@@ -133,7 +133,7 @@ class HistoryListView
     vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
 
     # Time ago
-    time_ago = format_time_ago(visit['visited_at'])
+    time_ago = format_time_ago(timestamp)
     time_label = Gtk::Label.new(time_ago)
     time_label.halign = :start
     time_label.style_context.add_class("dim-label")
@@ -145,7 +145,7 @@ class HistoryListView
     remove_button = Gtk::Button.new(label: "×")
     remove_button.relief = :none
     remove_button.signal_connect("clicked") do
-      @history_manager.delete_visit(visit['visit_id'])
+      @history_manager.delete_visit(delete_id)
       refresh()  # Refresh after removal
       true  # Stop event propagation to prevent row-activated signal
     end
@@ -153,8 +153,8 @@ class HistoryListView
 
     row.add(hbox)
 
-    # Store visit data in the row
-    row.instance_variable_set(:@visit_data, visit)
+    # Store the entry in the row so activation can hand it back
+    row.instance_variable_set(:@visit_data, entry)
 
     row
   end
@@ -164,16 +164,16 @@ class HistoryListView
   # @param row [Gtk::ListBoxRow] Clicked row
   # @return [void]
   def on_history_item_clicked(row)
-    visit = row.instance_variable_get(:@visit_data)
-    @on_history_item_selected.call(visit) if @on_history_item_selected && visit
+    entry = row.instance_variable_get(:@visit_data)
+    @on_history_item_selected.call(entry) if @on_history_item_selected && entry
   end
 
   # Formats timestamp as human-readable relative time
   #
-  # @param timestamp [Integer] Unix timestamp
+  # @param timestamp [Time, nil] When the entry was visited
   # @return [String] Human-readable time string
   def format_time_ago(timestamp)
-    seconds_ago = Time.now.to_i - timestamp
+    seconds_ago = Time.now.to_i - timestamp.to_i
     minutes_ago = seconds_ago / 60
     hours_ago = minutes_ago / 60
     days_ago = hours_ago / 24

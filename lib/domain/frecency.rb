@@ -25,14 +25,28 @@
 #   score = Frecency.score(visit_count, last_visited, now)  # => 1000
 #
 module Frecency
+  # Seconds in a day, the unit both the scoring tiers and the candidate query
+  # measure recency in
+  SECONDS_PER_DAY = 86_400
+
+  # Weight given to a visit when the *candidate* query ranks pages in SQL.
+  #
+  # `HistoryRepository#top_pages_by_frecency` cannot run this module -- it has
+  # to order thousands of rows in the database -- so it approximates with
+  # `(visit_count * CANDIDATE_VISIT_WEIGHT) + (last_visited_at / SECONDS_PER_DAY)`
+  # and leaves the real scoring to `.score` on the shortlist it returns. The
+  # constants live here so the approximation cannot drift away from the
+  # algorithm it approximates.
+  CANDIDATE_VISIT_WEIGHT = 10
+
   # Recency weight thresholds (in seconds) mapped to weights
   # Order matters: checked from smallest to largest threshold
   RECENCY_WEIGHTS = {
-    4 * 3600 => 100,      # 4 hours
-    86400 => 70,          # 1 day
-    7 * 86400 => 50,      # 1 week
-    30 * 86400 => 30,     # 1 month
-    90 * 86400 => 10      # 3 months
+    4 * 3600 => 100,                # 4 hours
+    SECONDS_PER_DAY => 70,          # 1 day
+    7 * SECONDS_PER_DAY => 50,      # 1 week
+    30 * SECONDS_PER_DAY => 30,     # 1 month
+    90 * SECONDS_PER_DAY => 10      # 3 months
   }.freeze
 
   # Calculates the frecency score for a page

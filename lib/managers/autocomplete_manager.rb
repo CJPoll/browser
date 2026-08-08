@@ -3,7 +3,7 @@ require_relative '../adapters/fzf_adapter'
 
 # AutocompleteManager - Orchestrates URL autocomplete suggestions
 #
-# This manager coordinates between the HistoryManager (data source),
+# This manager coordinates between Managers::HistoryManager (data source),
 # Frecency module (scoring), and FzfAdapter (fuzzy filtering) to provide
 # relevant URL suggestions as the user types.
 #
@@ -33,7 +33,8 @@ class AutocompleteManager
   # Owns the clock on behalf of the Frecency domain module, which never reads
   # it. Tests inject a controllable clock to make scoring deterministic.
   #
-  # @param history_manager [HistoryManager] History database manager
+  # @param history_manager [Managers::HistoryManager] History use cases; supplies
+  #   the candidate pages as Domain::Page objects
   # @param clock [#call] Returns the current Time
   def initialize(history_manager, clock: -> { Time.now })
     @history_manager = history_manager
@@ -104,12 +105,12 @@ class AutocompleteManager
 
     pages.map do |page|
       {
-        uri: page['uri'],
-        title: page['title'],
-        favicon: page['favicon'],
+        uri: page.uri,
+        title: page.title,
+        favicon: page.favicon,
         frecency: Frecency.score(
-          page['visit_count'] || 0,
-          page['last_visited_at'] || 0,
+          page.visit_count,
+          page.last_visited_at&.to_i || 0,
           now
         )
       }

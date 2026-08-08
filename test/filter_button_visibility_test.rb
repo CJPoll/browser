@@ -2,7 +2,7 @@ require_relative 'test_helper'
 require_relative '../lib/ui/sidebar'
 require_relative '../lib/ui/tab_list_view'
 require_relative '../lib/ui/history_list_view'
-require_relative '../history_manager'
+require_relative '../lib/managers/history_manager'
 
 # Note: test_helper already requires:
 # - queue_manager
@@ -16,7 +16,11 @@ class FilterButtonVisibilityTest < Minitest::Test
     @temp_db.close
 
     @queue_manager = create_queue_manager(@temp_db_path)
-    @history_manager = HistoryManager.new(File.join(File.dirname(@temp_db_path), 'history.db'))
+    @history_manager = Managers::HistoryManager.new(
+      repository: Repositories::HistoryRepository.new(
+        db_path: File.join(File.dirname(@temp_db_path), 'history.db')
+      )
+    )
 
     # Create view components
     @tab_list_view = TabListView.new(create_favicon_creator)
@@ -43,10 +47,7 @@ class FilterButtonVisibilityTest < Minitest::Test
     if @queue_manager
       @queue_manager.close
     end
-    if @history_manager
-      db = @history_manager.instance_variable_get(:@db)
-      db.close unless db.closed? rescue nil
-    end
+    @history_manager&.close
     File.delete(@temp_db_path) if File.exist?(@temp_db_path)
     history_path = File.join(File.dirname(@temp_db_path), 'history.db')
     File.delete(history_path) if File.exist?(history_path)

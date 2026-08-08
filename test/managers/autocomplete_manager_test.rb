@@ -1,22 +1,43 @@
 require 'minitest/autorun'
 require 'tempfile'
+require 'uri'
+require_relative '../../lib/domain/url_host'
 require_relative '../../lib/managers/autocomplete_manager'
-require_relative '../../history_manager'
+require_relative '../../lib/managers/history_manager'
+require_relative '../../lib/repositories/history_repository'
+require_relative '../support/test_clock'
 
 class AutocompleteManagerTest < Minitest::Test
+  # Every seeded visit lands on this instant and the manager scores from it,
+  # so recency weights -- and therefore the ranking -- are deterministic.
+  NOW = Time.at(1_700_000_000).freeze
+
   def setup
     # Create a temporary database for testing
     @db_file = Tempfile.new(['history', '.db'])
-    @history_manager = HistoryManager.new(@db_file.path)
-    @autocomplete_manager = AutocompleteManager.new(@history_manager)
+    @repository = Repositories::HistoryRepository.new(db_path: @db_file.path)
+    @history_manager = Managers::HistoryManager.new(repository: @repository)
+    @autocomplete_manager = AutocompleteManager.new(@history_manager, clock: TestClock.new(NOW))
 
     # Seed some test data
     seed_history_data
   end
 
   def teardown
+    @repository&.close
     @db_file.close
     @db_file.unlink
+  end
+
+  # Seeds visits through the repository rather than the manager: the manager
+  # deduplicates identical consecutive visits, which is exactly what building
+  # up a visit count needs to bypass.
+  def record_visit(url, title, times: 1)
+    authority = Domain::UrlHost.authority(URI.parse(url))
+
+    times.times do
+      @repository.record_visit(url: url, authority: authority, title: title, now: NOW)
+    end
   end
 
   # ========================================
@@ -75,7 +96,7 @@ class AutocompleteManagerTest < Minitest::Test
 
   def test_candidates_sorted_by_frecency
     # Add a very frequent page
-    50.times { @history_manager.record_visit("https://frequent.example.com", "Frequent Page") }
+    record_visit("https://frequent.example.com", "Frequent Page", times: 50)
     @autocomplete_manager.invalidate_cache
 
     result = @autocomplete_manager.suggest("example")
@@ -126,7 +147,7 @@ class AutocompleteManagerTest < Minitest::Test
     @autocomplete_manager.suggest("")
 
     # Add new data
-    @history_manager.record_visit("https://newsite.example.com", "New Site")
+    record_visit("https://newsite.example.com", "New Site")
 
     # Invalidate cache
     @autocomplete_manager.invalidate_cache
@@ -154,7 +175,7 @@ class AutocompleteManagerTest < Minitest::Test
   def test_suggest_respects_result_limit
     # Add many pages
     20.times do |i|
-      @history_manager.record_visit("https://page#{i}.example.com", "Page #{i}")
+      record_visit("https://page#{i}.example.com", "Page #{i}")
     end
     @autocomplete_manager.invalidate_cache
 
@@ -206,19 +227,21 @@ class AutocompleteManagerTest < Minitest::Test
   def test_handles_empty_history
     # Create manager with empty history
     empty_db = Tempfile.new(['empty_history', '.db'])
-    empty_history = HistoryManager.new(empty_db.path)
-    empty_manager = AutocompleteManager.new(empty_history)
+    empty_repository = Repositories::HistoryRepository.new(db_path: empty_db.path)
+    empty_history = Managers::HistoryManager.new(repository: empty_repository)
+    empty_manager = AutocompleteManager.new(empty_history, clock: TestClock.new(NOW))
 
     result = empty_manager.suggest("anything")
 
     assert_equal [], result
 
+    empty_repository.close
     empty_db.close
     empty_db.unlink
   end
 
   def test_handles_pages_with_nil_title
-    @history_manager.record_visit("https://notitle.example.com", nil)
+    record_visit("https://notitle.example.com", nil)
     @autocomplete_manager.invalidate_cache
 
     # Should not crash
@@ -250,9 +273,7 @@ class AutocompleteManagerTest < Minitest::Test
     ]
 
     test_pages.each do |page|
-      page[:visits].times do
-        @history_manager.record_visit(page[:url], page[:title])
-      end
+      record_visit(page[:url], page[:title], times: page[:visits])
     end
   end
 end

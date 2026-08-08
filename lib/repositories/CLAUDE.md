@@ -150,3 +150,38 @@ stored   # <- the block's value has to come out through a local
 The gem's `transaction` ends in `abort and rollback or commit`, so its value
 is the commit, not the block. Returning directly from `transaction` silently
 yields `true` -- which reads as success and loses the record.
+
+## A projection is part of the method's contract
+
+The same table can be read several ways, and the projections here differ on
+purpose: `recent_visits` selects the favicon because the sidebar renders one,
+`search` does not because search rows never showed one, and
+`top_pages_by_frecency` selects no id at all. Widening a projection is a
+behaviour change -- suddenly the search rows have favicons -- so it is not
+something to "tidy up" while converting a store to Domain objects.
+
+The consequence is that a Domain object handed back by a repository may be
+partially populated. Two rules keep that honest:
+
+- **Require only what every projection can supply.** `Domain::Page` requires
+  `uri` and nothing else; the id, the favicon and the timestamps are optional
+  because one query or another genuinely lacks them.
+- **Say what each query promises** in its docstring ("populated with uri,
+  title, favicon and visit_count -- what the history sidebar renders"), and
+  give the surprising ones a named test (`test_search_results_omit_the_favicon`)
+  so the omission reads as a decision rather than an oversight.
+
+## Constants shared with the Domain function the SQL approximates
+
+`top_pages_by_frecency` ranks in SQL because it cannot run `Frecency.score`
+over thousands of rows, then hands a shortlist to the real scorer. The
+approximation's weights live in `Frecency` (`CANDIDATE_VISIT_WEIGHT`,
+`SECONDS_PER_DAY`) and are interpolated into the `ORDER BY`:
+
+```ruby
+ORDER BY (visit_count * #{Frecency::CANDIDATE_VISIT_WEIGHT}) +
+         (last_visited_at / #{Frecency::SECONDS_PER_DAY}) DESC
+```
+
+Interpolation is safe here and only here: these are integer constants owned by
+Domain, not caller input. Everything a caller supplies stays a bound `?`.

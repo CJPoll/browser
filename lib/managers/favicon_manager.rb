@@ -5,7 +5,7 @@ class FaviconManager
   # Creates a new favicon manager
   #
   # @param favicon_db [WebKit2Gtk::FaviconDatabase] WebKit favicon database
-  # @param history_manager [HistoryManager] History manager for storing favicon data
+  # @param history_manager [Managers::HistoryManager] History use cases, for storing favicon data
   # @param tabs_accessor [Proc] Proc that returns the current tabs array (e.g., -> { @tabs })
   def initialize(favicon_db, history_manager, tabs_accessor)
     @favicon_db = favicon_db

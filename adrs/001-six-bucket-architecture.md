@@ -120,6 +120,8 @@ Current classes that already conform:
 | `lib/domain/tag.rb` | Domain (conforms) |
 | `lib/domain/tag_usage.rb` | Domain (conforms) |
 | `lib/domain/queue_traversal.rb` | Domain (conforms) |
+| `lib/domain/page.rb` | Domain (conforms) |
+| `lib/domain/visit.rb` | Domain (conforms -- `visited_at:` supplied by the caller) |
 | `lib/repositories/download_repository.rb` | Repositories |
 | `lib/repositories/popup_exception_repository.rb` | Repositories |
 | `lib/repositories/media_permission_repository.rb` | Repositories |
@@ -128,6 +130,7 @@ Current classes that already conform:
 | `lib/repositories/queue_database.rb` | Repositories (shared `queue.db` connection and schema) |
 | `lib/repositories/queue_repository.rb` | Repositories |
 | `lib/repositories/tag_repository.rb` | Repositories |
+| `lib/repositories/history_repository.rb` | Repositories |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
 | `lib/adapters/file_system.rb` | Adapters |
 | `lib/managers/autocomplete_manager.rb` | Managers |
@@ -135,6 +138,7 @@ Current classes that already conform:
 | `lib/managers/site_permission_manager.rb` | Managers |
 | `lib/managers/queue_manager.rb` | Managers |
 | `lib/managers/queue_navigation_manager.rb` | Managers |
+| `lib/managers/history_manager.rb` | Managers |
 | `lib/handlers/download_handler.rb` | Framework (WebKit signals -> Manager) |
 | `lib/ui/download_list_view.rb` | UI (data in, intent callbacks out) |
 | `lib/ui/site_permissions_window.rb` | UI (data in, intent callbacks out) |
@@ -146,7 +150,7 @@ different tables with different semantics:
 | Current file | Target |
 |--------------|--------|
 | The four permission pseudo-managers | Deleted -- superseded by the four repositories above plus `Managers::SitePermissionManager`, which resolves URLs to hosts via `Domain::UrlHost` and owns the clock for grants |
-| `history_manager.rb` (root) | `Repositories::HistoryRepository` (`sites`, `pages`, `visits`); its authority logic already lives in `Domain::UrlHost` |
+| `history_manager.rb` (root) | Deleted -- superseded by `Repositories::HistoryRepository` (`sites`, `pages`, `visits`) plus `Managers::HistoryManager`, which owns the clock and the visit-deduplication policy and resolves authorities via `Domain::UrlHost` |
 | `queue_manager.rb` (root) | Deleted -- superseded by `Repositories::QueueRepository` + `Repositories::TagRepository` over a shared `Repositories::QueueDatabase`, plus `Managers::QueueManager` and `Managers::QueueNavigationManager` |
 | `download_manager.rb` (root) | Deleted -- superseded by `Repositories::DownloadRepository` + `DownloadCoordinator`, wired in through `DownloadHandler` |
 | `lib/managers/session_manager.rb` | Adapters (JSON file store, not a database) |
