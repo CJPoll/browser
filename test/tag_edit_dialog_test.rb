@@ -38,8 +38,8 @@ class TagEditDialogTest < Minitest::Test
 
     dialog = TagEditDialog.new(
       nil,  # parent_window (nil for testing)
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: @on_tags_changed
     )
 
@@ -52,8 +52,8 @@ class TagEditDialogTest < Minitest::Test
     # Create dialog
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: @on_tags_changed
     )
 
@@ -80,8 +80,8 @@ class TagEditDialogTest < Minitest::Test
   def test_create_and_assign_tag_empty_name
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: @on_tags_changed
     )
 
@@ -103,8 +103,8 @@ class TagEditDialogTest < Minitest::Test
   def test_create_and_assign_tag_already_exists
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: @on_tags_changed
     )
 
@@ -126,8 +126,8 @@ class TagEditDialogTest < Minitest::Test
   def test_filter_tag_list
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: @on_tags_changed
     )
 
@@ -157,8 +157,8 @@ class TagEditDialogTest < Minitest::Test
     # Addresses Gap #9 - whitespace-only search should show all tags
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: @on_tags_changed
     )
 
@@ -183,12 +183,16 @@ class TagEditDialogTest < Minitest::Test
       added_at: Time.at(1_700_000_000)
     )
 
+    # Collect errors instead of showing a blocking modal dialog
+    reported_errors = []
+
     # Dialog should initialize without error
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       fake_entry,
-      on_tags_changed: @on_tags_changed
+      **tag_edit_dialog_callbacks(@queue_manager),
+      on_tags_changed: @on_tags_changed,
+      on_error: ->(message) { reported_errors << message }
     )
 
     # tags_for_entry returns empty array for non-existent ID
@@ -200,11 +204,90 @@ class TagEditDialogTest < Minitest::Test
     new_tag_entry.text = "NewTag"
 
     # create_and_assign_tag should handle :invalid_entry result
-    # Note: Cannot test error dialog display without X server
-    # But can verify callback is NOT invoked on error
     dialog.send(:create_and_assign_tag)
+
+    # Error is reported through the on_error callback (no modal in tests)
+    assert_equal ["Queue entry no longer exists"], reported_errors
 
     # Callback should not be invoked on :invalid_entry error
     assert_equal 0, @callback_count, "Callback should not be invoked on error"
+  end
+
+  # --- Checkbox toggling ---
+  #
+  # GTK signal emission does not reach Ruby handlers under minitest, so the
+  # checkbox cannot be ticked. Its handler is a one-line call to `toggle_tag`,
+  # which is what these tests drive.
+
+  def test_toggle_tag_on_assigns_and_announces_the_change
+    dialog = build_dialog
+    tag2 = @queue_manager.find_tag_by_id(@tag2_id)
+
+    dialog.toggle_tag(tag2, true)
+
+    assert_equal [@tag1_id, @tag2_id].sort,
+                 @queue_manager.tags_for_entry(@entry.id).map(&:id).sort
+    assert_equal 1, @callback_count
+  end
+
+  def test_toggle_tag_off_unassigns_and_announces_the_change
+    dialog = build_dialog
+    tag1 = @queue_manager.find_tag_by_id(@tag1_id)
+
+    dialog.toggle_tag(tag1, false)
+
+    assert_equal [], @queue_manager.tags_for_entry(@entry.id).map(&:id)
+    assert_equal 1, @callback_count
+  end
+
+  def test_toggling_a_tag_that_is_already_assigned_is_not_an_error
+    dialog = build_dialog
+    tag1 = @queue_manager.find_tag_by_id(@tag1_id)
+
+    dialog.toggle_tag(tag1, true)
+
+    assert_empty @reported_errors
+    assert_equal 0, @callback_count, "Nothing changed, so nothing is announced"
+  end
+
+  def test_toggling_a_tag_on_a_deleted_entry_reports_the_error
+    fake_entry = Domain::QueueEntry.new(
+      id: 99_999,
+      url: 'https://example.com',
+      added_at: Time.at(1_700_000_000)
+    )
+    dialog = build_dialog(entry: fake_entry)
+    tag1 = @queue_manager.find_tag_by_id(@tag1_id)
+
+    dialog.toggle_tag(tag1, true)
+
+    assert_equal ["Queue entry no longer exists"], @reported_errors
+  end
+
+  # --- Bucket rules ---
+
+  # ADR 001: a UI component may not hold a manager, repository or adapter.
+  def test_holds_no_manager_or_repository
+    dialog = build_dialog
+
+    collaborators = dialog.instance_variables.map { |name| dialog.instance_variable_get(name) }
+
+    assert(collaborators.none? { |value| value.class.name.to_s =~ /Manager|Repository|Adapter/ })
+  end
+
+  private
+
+  # Builds a dialog wired to the queue manager the way BrowserWindow does,
+  # collecting errors instead of opening a modal that would block the run.
+  def build_dialog(entry: @entry)
+    @reported_errors = []
+
+    TagEditDialog.new(
+      nil,
+      entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
+      on_tags_changed: @on_tags_changed,
+      on_error: ->(message) { @reported_errors << message }
+    )
   end
 end

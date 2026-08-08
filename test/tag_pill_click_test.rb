@@ -15,7 +15,7 @@ class TagPillClickTest < Minitest::Test
     @queue_manager.assign_tag_by_name(@entry.id, "YouTube")
 
     # Create queue list view
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Track callback invocations
     @clicked_tag_name = nil

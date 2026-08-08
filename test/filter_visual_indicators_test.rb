@@ -7,7 +7,7 @@ class FilterVisualIndicatorsTest < Minitest::Test
     @temp_db.close
 
     @queue_manager = create_queue_manager(@temp_db_path)
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Add entries and tags
     @queue_manager.add("https://example.com/1", "Entry 1")

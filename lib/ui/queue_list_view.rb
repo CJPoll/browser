@@ -1,19 +1,38 @@
 require 'gtk3'
 require 'cgi'
 require 'uri'
+require_relative '../domain/queue_sort'
+require_relative '../domain/tag_color'
 require_relative '../domain/url_matcher'
 
 # Sidebar view for displaying and managing the URL queue
+#
+# Holds no manager, repository or adapter. Everything it renders arrives
+# through a `get_*` callback and everything the user asks for leaves through
+# an `on_*` callback; the Framework (`BrowserWindow`) binds both to
+# `Managers::QueueManager`.
+#
+# Which tags are being filtered on and which sort the user picked are view
+# state, so they stay here. What those choices *mean* does not:
+# `Managers::QueueManager#entries_for_filter` decides that an empty filter
+# means "everything", and `Domain::QueueSort` owns the orderings.
 class QueueListView
-  attr_reader :list_widget, :queue_manager
+  attr_reader :list_widget
 
   # Creates a new queue list view
   #
-  # @param queue_manager [Managers::QueueManager] Queue manager for querying and modifying queue
-  # @param favicon_image_creator [Proc] Proc that creates favicon images: ->(favicon_data) { Gtk::Image }
-  def initialize(queue_manager, favicon_image_creator)
-    @queue_manager = queue_manager
-    @favicon_image_creator = favicon_image_creator
+  # @param callbacks [Hash] Data sources and intents:
+  #   - :create_favicon_image => ->(favicon_data) { Gtk::Image }
+  #   - :get_entries => ->(tag_ids) { Array<Domain::QueueEntry> }
+  #   - :get_total_count => -> { Integer } unfiltered queue size
+  #   - :get_tags_for_entry => ->(entry_id) { Array<Domain::Tag> }
+  #   - :get_tag_usages => -> { Array<Domain::TagUsage> } for the filter popover
+  #   - :find_tag_by_name => ->(tag_name) { Domain::Tag, nil }
+  #   - :find_tag_by_id => ->(tag_id) { Domain::Tag, nil }
+  #   - :on_remove_entry => ->(entry_id) { ... }
+  #   - :on_move_entry => ->(entry_id, position) { truthy when the move happened }
+  def initialize(callbacks = {})
+    @callbacks = callbacks
     @list_widget = Gtk::ListBox.new
     @list_widget.selection_mode = :single
 
@@ -58,6 +77,10 @@ class QueueListView
       on_queue_item_clicked(row)
     end
   end
+
+  # The callbacks below are assigned after construction rather than passed to
+  # it: the sidebar they notify does not exist until the views it contains have
+  # been built.
 
   # Sets callback to invoke when queue item is selected
   #
@@ -107,20 +130,6 @@ class QueueListView
     @on_filter_state_changed = callback
   end
 
-  # Generates RGB color for a tag name (deterministic, case-insensitive)
-  # PUBLIC for testing
-  # @param tag_name [String] Tag name to generate color for
-  # @return [Array<Integer>] RGB values as [r, g, b] (0-255 range)
-  def tag_color_rgb(tag_name)
-    # Generate hue from tag name (0-360 degrees)
-    hash = tag_name.downcase.sum % 360
-    hue = hash
-    saturation = 70  # 70% - vibrant colors
-    lightness = 60   # 60% - readable against white background
-
-    hsl_to_rgb(hue, saturation, lightness)
-  end
-
   # Adds a tag to the active filters
   #
   # @param tag_id [Integer] Tag ID to add
@@ -154,12 +163,27 @@ class QueueListView
   # @param tag_name [String] Tag name to filter by
   # @return [void]
   def filter_by_tag_name(tag_name)
-    tag = @queue_manager.find_tag_by_name(tag_name)
+    tag = find_tag_by_name(tag_name)
     return unless tag
 
     # Set as the only active filter (replaces existing filters)
     @active_filter_tag_ids = [tag.id]
     apply_filters
+  end
+
+  # Removes the filter for a tag named by the caller
+  #
+  # The filter bar shows pills by name, so this is what its remove buttons
+  # call -- it keeps the name-to-id lookup inside the view that owns the
+  # filter state instead of exposing that state to the sidebar.
+  #
+  # @param tag_name [String] Tag name to stop filtering by
+  # @return [void]
+  def remove_filter_tag_by_name(tag_name)
+    tag = find_tag_by_name(tag_name)
+    return unless tag
+
+    remove_filter_tag(tag.id)
   end
 
   # Returns whether any filters are active
@@ -174,7 +198,7 @@ class QueueListView
   # @return [Array<String>] Tag names
   def active_filter_tag_names
     @active_filter_tag_ids.map do |tag_id|
-      tag = @queue_manager.find_tag_by_id(tag_id)
+      tag = @callbacks[:find_tag_by_id]&.call(tag_id)
       tag ? tag.name : nil
     end.compact
   end
@@ -193,7 +217,7 @@ class QueueListView
 
   # Sets the current sort mode
   #
-  # @param mode [Symbol] One of :position, :title, :date_published
+  # @param mode [Symbol] One of Domain::QueueSort::MODES
   # @return [void]
   def set_sort_mode(mode)
     return if @current_sort_mode == mode
@@ -237,8 +261,8 @@ class QueueListView
     @list_widget.children.each { |child| @list_widget.remove(child) }
 
     # Get filtered and sorted entries
-    entries = get_filtered_sorted_entries
-    total_count = @queue_manager.count
+    entries = filtered_sorted_entries
+    total_count = @callbacks[:get_total_count]&.call || 0
 
     # Check for empty state
     if entries.empty? && @active_filter_tag_ids.any?
@@ -261,6 +285,34 @@ class QueueListView
 
     # Notify callback with filtered count and total count
     @on_queue_modified.call(entries.length, total_count) if @on_queue_modified
+  end
+
+  # Asks for an entry to be dropped from the queue, then redraws
+  #
+  # @param entry_id [Integer] Entry the user wants gone
+  # @return [void]
+  def remove_entry(entry_id)
+    @callbacks[:on_remove_entry]&.call(entry_id)
+    refresh
+  end
+
+  # Asks for an entry to be moved, then redraws with the moved row selected
+  #
+  # @param entry_id [Integer] Entry being dragged
+  # @param position [Integer] Position it was dropped on
+  # @return [void]
+  def move_entry(entry_id, position)
+    return unless @callbacks[:on_move_entry]&.call(entry_id, position)
+
+    refresh
+
+    @list_widget.children.each do |child|
+      child_entry = child.instance_variable_get(:@queue_entry)
+      if child_entry && child_entry.id == entry_id
+        @list_widget.select_row(child)
+        break
+      end
+    end
   end
 
   # Updates the drop indicator position
@@ -298,6 +350,12 @@ class QueueListView
 
   private
 
+  # @param tag_name [String] Tag name to look up
+  # @return [Domain::Tag, nil] The tag, when the data source knows it
+  def find_tag_by_name(tag_name)
+    @callbacks[:find_tag_by_name]&.call(tag_name)
+  end
+
   # Sets up CSS for the drop indicator styling
   def setup_drop_indicator_css
     css_provider = Gtk::CssProvider.new
@@ -320,41 +378,10 @@ class QueueListView
   # Gets queue entries with current filters and sort applied
   #
   # @return [Array<Domain::QueueEntry>] Filtered and sorted entries
-  def get_filtered_sorted_entries
-    if @active_filter_tag_ids.empty?
-      # No filters - get all entries
-      entries = @queue_manager.all
-    else
-      # Apply AND filter
-      entries = @queue_manager.entries_with_tags(@active_filter_tag_ids)
-    end
+  def filtered_sorted_entries
+    entries = @callbacks[:get_entries]&.call(@active_filter_tag_ids) || []
 
-    # Apply sorting
-    case @current_sort_mode
-    when :position
-      # Already sorted by position from database
-      entries
-    when :title
-      entries.sort_by { |e| e.display_title.downcase }
-    when :date_published
-      # Sort by date descending, NULLs last
-      entries.sort do |a, b|
-        date_a = a.published_at
-        date_b = b.published_at
-
-        if date_a.nil? && date_b.nil?
-          0
-        elsif date_a.nil?
-          1  # NULLs go to end
-        elsif date_b.nil?
-          -1  # NULLs go to end
-        else
-          date_b <=> date_a  # Descending (newest first)
-        end
-      end
-    else
-      entries
-    end
+    Domain::QueueSort.apply(entries, @current_sort_mode)
   end
 
   # Applies current filters and refreshes display
@@ -420,7 +447,7 @@ class QueueListView
     hbox.margin_end = 12
 
     # Favicon
-    favicon_image = @favicon_image_creator.call(entry.favicon_data)
+    favicon_image = @callbacks[:create_favicon_image].call(entry.favicon_data)
     favicon_image.valign = :start
     hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
 
@@ -450,7 +477,7 @@ class QueueListView
     vbox.pack_start(url_label, expand: false, fill: false, padding: 0)
 
     # Tags display
-    tags = @queue_manager.tags_for_entry(entry.id)
+    tags = @callbacks[:get_tags_for_entry]&.call(entry.id) || []
     tags_box = Gtk::Box.new(:horizontal, 8)
     tags_box.halign = :start
 
@@ -482,8 +509,7 @@ class QueueListView
     remove_button = Gtk::Button.new(label: "×")
     remove_button.relief = :none
     remove_button.signal_connect("clicked") do
-      @queue_manager.remove_by_id(entry.id)
-      refresh()  # Refresh after removal
+      remove_entry(entry.id)
       true  # Stop event propagation to prevent row-activated signal
     end
     hbox.pack_start(remove_button, expand: false, fill: false, padding: 0)
@@ -589,19 +615,7 @@ class QueueListView
 
         if target_entry && dropped_entry_id != target_entry.id
           # Move the dropped entry to the target position
-          if view.queue_manager.move(dropped_entry_id, target_entry.position)
-            # Refresh the queue to show the new order
-            view.refresh()
-
-            # Find and select the moved row
-            view.list_widget.children.each do |child|
-              child_entry = child.instance_variable_get(:@queue_entry)
-              if child_entry && child_entry.id == dropped_entry_id
-                view.list_widget.select_row(child)
-                break
-              end
-            end
-          end
+          view.move_entry(dropped_entry_id, target_entry.position)
         end
       end
 
@@ -624,43 +638,11 @@ class QueueListView
     @on_queue_item_selected.call(entry) if @on_queue_item_selected && entry
   end
 
-  private
-
-  # Converts HSL color to RGB values (0-255 range)
-  # @param hue [Integer] Hue in degrees (0-360)
-  # @param saturation [Integer] Saturation percentage (0-100)
-  # @param lightness [Integer] Lightness percentage (0-100)
-  # @return [Array<Integer>] RGB values as [r, g, b] (0-255 range)
-  def hsl_to_rgb(hue, saturation, lightness)
-    # Convert HSL to RGB
-    # Formula from https://en.wikipedia.org/wiki/HSL_and_HSV#HSL_to_RGB
-    c = (1 - (2 * lightness / 100.0 - 1).abs) * (saturation / 100.0)
-    h_prime = hue / 60.0
-    x = c * (1 - (h_prime % 2 - 1).abs)
-
-    r1, g1, b1 = case h_prime.floor
-      when 0 then [c, x, 0]
-      when 1 then [x, c, 0]
-      when 2 then [0, c, x]
-      when 3 then [0, x, c]
-      when 4 then [x, 0, c]
-      when 5 then [c, 0, x]
-      else [0, 0, 0]
-    end
-
-    m = lightness / 100.0 - c / 2.0
-    r = ((r1 + m) * 255).round
-    g = ((g1 + m) * 255).round
-    b = ((b1 + m) * 255).round
-
-    [r, g, b]
-  end
-
   # Create Gdk::RGBA from tag name
   # @param tag_name [String] Tag name to generate color for
   # @return [Gdk::RGBA] RGBA color object for GTK
   def tag_color_rgba(tag_name)
-    r, g, b = tag_color_rgb(tag_name)
+    r, g, b = Domain::TagColor.rgb(tag_name)
     Gdk::RGBA.new(r / 255.0, g / 255.0, b / 255.0, 1.0)
   end
 
@@ -775,7 +757,7 @@ class QueueListView
     tags_box = Gtk::Box.new(:vertical, 4)
 
     # Get tag usage counts
-    tag_usages = @queue_manager.tag_usage_counts
+    tag_usages = @callbacks[:get_tag_usages]&.call || []
 
     if tag_usages.empty?
       # No tags exist - show message

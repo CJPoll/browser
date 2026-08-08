@@ -7,7 +7,7 @@ class EmptyStateTest < Minitest::Test
     @temp_db.close
 
     @queue_manager = create_queue_manager(@temp_db_path)
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Add entries with different tags (no overlap)
     @queue_manager.add("https://example.com/1", "Entry 1")
@@ -35,7 +35,7 @@ class EmptyStateTest < Minitest::Test
     @queue_list_view.add_filter_tag(@youtube_id)
     @queue_list_view.add_filter_tag(@gaming_id)
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
 
     assert_equal 0, entries.length
     assert_equal true, @queue_list_view.filters_active?
@@ -49,7 +49,7 @@ class EmptyStateTest < Minitest::Test
     # Clear filters
     @queue_list_view.clear_all_filters
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
 
     assert_equal 2, entries.length
   end

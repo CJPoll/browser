@@ -24,8 +24,8 @@ class FilterButtonVisibilityTest < Minitest::Test
 
     # Create view components
     @tab_list_view = TabListView.new(create_favicon_creator)
-    @history_list_view = HistoryListView.new(@history_manager, create_favicon_creator)
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @history_list_view = HistoryListView.new(**history_list_view_callbacks(@history_manager))
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Create sidebar
     @sidebar = Sidebar.new(

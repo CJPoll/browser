@@ -39,6 +39,21 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::TagName` | what is the canonical form of this tag name? |
 | `Domain::Frecency` | how relevant is this history entry? |
 | `Domain::QueueTraversal` | which queue entry comes next from here? |
+| `Domain::QueueSort` | what order does the sidebar show the queue in? |
+| `Domain::TagColor` | what colour is this tag drawn in? |
+
+## Presentation rules are Domain too
+
+`Domain::QueueSort` and `Domain::TagColor` look like view code, and they are
+called from `lib/ui/` -- which is allowed, UI may call Domain. They live here
+because they are deterministic decisions with no IO, and because more than one
+widget needs the same answer: the queue row and the sidebar's filter bar must
+agree on a tag's colour, and they now do so without either widget knowing the
+other exists.
+
+The line to hold is *layout stays in the widget*. `TagColor.rgb` returns
+`[r, g, b]`, not a `Gdk::RGBA` -- the moment Domain names a GTK type it has
+stopped being a rule and started being a widget.
 
 ## Return a decision, not a side effect
 

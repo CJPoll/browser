@@ -302,6 +302,21 @@ module Managers
       @queue_repository.find_all_by_ids(entry_ids)
     end
 
+    # Entries matching a tag filter, where filtering by nothing means everything
+    #
+    # The sidebar's filter starts empty and the user narrows from there, so an
+    # empty tag list is not "no entries match" -- it is "no filter applied".
+    # That rule lives here rather than in the widget, which only tracks which
+    # tags the user has ticked.
+    #
+    # @param tag_ids [Array<Integer>, nil] Tag ids the user is filtering by
+    # @return [Array<Domain::QueueEntry>] In queue order
+    def entries_for_filter(tag_ids)
+      return all if tag_ids.nil? || tag_ids.empty?
+
+      entries_with_tags(tag_ids)
+    end
+
     # @return [Array<Domain::TagUsage>] Every tag with its carrier count
     def tag_usage_counts
       @tag_repository.usage_counts

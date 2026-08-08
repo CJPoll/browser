@@ -11,7 +11,7 @@ class QueueListViewTagsTest < Minitest::Test
     # Use test helper method for favicon creator
     @favicon_creator = create_favicon_creator
 
-    @queue_list_view = QueueListView.new(@queue_manager, @favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
   end
 
   def teardown
@@ -90,27 +90,8 @@ class QueueListViewTagsTest < Minitest::Test
     assert_equal "+2 more", more_label.text, "Should show +2 more"
   end
 
-  def test_tag_color_generation_deterministic
-    # Same tag name should always produce same color
-    color1 = @queue_list_view.tag_color_rgb("YouTube")
-    color2 = @queue_list_view.tag_color_rgb("YouTube")
-
-    assert_equal color1, color2, "Same tag should produce same color"
-
-    # Different tags should produce different colors (usually)
-    color3 = @queue_list_view.tag_color_rgb("Gaming")
-    refute_equal color1, color3, "Different tags should produce different colors"
-  end
-
-  def test_tag_color_case_insensitive
-    # Case-insensitive tag names should produce same color
-    color1 = @queue_list_view.tag_color_rgb("YouTube")
-    color2 = @queue_list_view.tag_color_rgb("youtube")
-    color3 = @queue_list_view.tag_color_rgb("YOUTUBE")
-
-    assert_equal color1, color2, "youtube should match YouTube"
-    assert_equal color1, color3, "YOUTUBE should match YouTube"
-  end
+  # Tag colouring itself now lives in Domain::TagColor and is tested
+  # exhaustively in test/domain/tag_color_test.rb.
 
   def test_no_tags_shows_empty_space
     # Add queue entry without tags

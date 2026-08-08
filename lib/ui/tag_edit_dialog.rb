@@ -2,23 +2,36 @@ require 'gtk3'
 require 'cgi'
 
 # Dialog for editing tags assigned to a queue entry
+#
+# Holds no manager, repository or adapter. The tag list arrives through `get_*`
+# callbacks and each toggle reports intent through an `on_*` callback that
+# hands back the manager's result symbol; the Framework (`BrowserWindow`) binds
+# them to `Managers::QueueManager`.
 class TagEditDialog
   attr_reader :dialog
 
   # Creates a new tag edit dialog
   #
   # @param parent_window [Gtk::Window] Parent window for modal dialog
-  # @param queue_manager [Managers::QueueManager] Queue manager for tag operations
   # @param entry [Domain::QueueEntry] Queue entry being tagged
-  # @param on_tags_changed [Proc] Callback invoked after tags change (no args)
-  def initialize(parent_window, queue_manager, entry, on_tags_changed: nil)
+  # @param callbacks [Hash] Data sources and intents:
+  #   - :get_all_tags => -> { Array<Domain::Tag> } alphabetical
+  #   - :get_assigned_tag_ids => ->(entry_id) { Array<Integer> }
+  #   - :on_assign_tag => ->(entry_id, tag_id) { Symbol result }
+  #   - :on_unassign_tag => ->(entry_id, tag_id) { Symbol result }
+  #   - :on_create_tag => ->(tag_name) { Domain::Tag, nil }
+  #   - :on_tags_changed => -> { ... } invoked after tags change
+  #   - :on_error => ->(message) { ... }; when absent, a modal
+  #     Gtk::MessageDialog is shown instead
+  def initialize(parent_window, entry, callbacks = {})
     @parent_window = parent_window
-    @queue_manager = queue_manager
     @entry = entry
-    @on_tags_changed = on_tags_changed
+    @callbacks = callbacks
+    @on_tags_changed = callbacks[:on_tags_changed]
+    @on_error = callbacks[:on_error]
 
     # Current assigned tag IDs (for tracking changes)
-    @assigned_tag_ids = @queue_manager.tags_for_entry(@entry.id).map(&:id)
+    @assigned_tag_ids = Array(callbacks[:get_assigned_tag_ids]&.call(@entry.id))
 
     # Build dialog
     create_dialog
@@ -34,7 +47,38 @@ class TagEditDialog
     @dialog.destroy
   end
 
+  # Assigns or unassigns a tag, following the result the Framework reports back
+  #
+  # `:already_assigned` and `:not_assigned` are not errors -- the checkbox is
+  # already showing what the user asked for -- so they are silently ignored.
+  #
+  # @param tag [Domain::Tag] Tag the user ticked or unticked
+  # @param assign [Boolean] True when the checkbox was ticked
+  # @return [void]
+  def toggle_tag(tag, assign)
+    intent = assign ? :on_assign_tag : :on_unassign_tag
+    result = @callbacks[intent]&.call(@entry.id, tag.id)
+
+    case result
+    when :assigned
+      @assigned_tag_ids << tag.id
+      notify_tags_changed
+    when :unassigned
+      @assigned_tag_ids.delete(tag.id)
+      notify_tags_changed
+    when :invalid_entry
+      report_missing_entry
+    end
+  end
+
   private
+
+  # The entry was deleted while the dialog was open: say so and close, since
+  # nothing else in the dialog can succeed.
+  def report_missing_entry
+    show_error_dialog("Queue entry no longer exists")
+    @dialog.response(Gtk::ResponseType::CLOSE)
+  end
 
   def create_dialog
     title = @entry.display_title
@@ -109,7 +153,7 @@ class TagEditDialog
 
   def populate_tag_list
     # Get all tags sorted alphabetically
-    all_tags = @queue_manager.all_tags
+    all_tags = @callbacks[:get_all_tags]&.call || []
 
     all_tags.each do |tag|
       row = create_tag_checkbox_row(tag)
@@ -133,35 +177,7 @@ class TagEditDialog
 
     # Immediate assignment/unassignment on toggle
     checkbox.signal_connect("toggled") do
-      if checkbox.active?
-        # Assign tag
-        result = @queue_manager.assign_tag(@entry.id, tag.id)
-
-        case result
-        when :assigned
-          @assigned_tag_ids << tag.id
-          notify_tags_changed
-        when :invalid_entry
-          # Entry was deleted - show error and close dialog
-          show_error_dialog("Queue entry no longer exists")
-          @dialog.response(Gtk::ResponseType::CLOSE)  # Close dialog after error
-        # :already_assigned is not an error - silently ignore
-        end
-      else
-        # Unassign tag
-        result = @queue_manager.unassign_tag(@entry.id, tag.id)
-
-        case result
-        when :unassigned
-          @assigned_tag_ids.delete(tag.id)
-          notify_tags_changed
-        when :invalid_entry
-          # Entry was deleted - show error and close dialog
-          show_error_dialog("Queue entry no longer exists")
-          @dialog.response(Gtk::ResponseType::CLOSE)  # Close dialog after error
-        # :not_assigned is not an error - silently ignore
-        end
-      end
+      toggle_tag(tag, checkbox.active?)
     end
 
     row.add(checkbox)
@@ -252,7 +268,7 @@ class TagEditDialog
     return if tag_name.empty?  # Silent no-op for empty input
 
     # Create or find tag
-    new_tag = @queue_manager.create_or_find_tag(tag_name)
+    new_tag = @callbacks[:on_create_tag]&.call(tag_name)
     if new_tag.nil?
       # Invalid tag name (too long, whitespace-only, etc.)
       show_error_dialog("Invalid tag name")
@@ -260,7 +276,7 @@ class TagEditDialog
     end
 
     # Assign to entry
-    result = @queue_manager.assign_tag(@entry.id, new_tag.id)
+    result = @callbacks[:on_assign_tag]&.call(@entry.id, new_tag.id)
 
     case result
     when :assigned
@@ -282,8 +298,7 @@ class TagEditDialog
       end
     when :invalid_entry
       # Entry was deleted
-      show_error_dialog("Queue entry no longer exists")
-      @dialog.response(Gtk::ResponseType::CLOSE)  # Close dialog after error
+      report_missing_entry
     else
       # Unexpected error
       show_error_dialog("Failed to assign tag: #{result}")
@@ -316,6 +331,11 @@ class TagEditDialog
   # This is the intended hierarchy - error dialogs are parented to TagEditDialog
   # so they appear centered on the tag dialog, not the main window
   def show_error_dialog(message)
+    if @on_error
+      @on_error.call(message)
+      return
+    end
+
     error_dialog = Gtk::MessageDialog.new(
       parent: @dialog,  # Parent to TagEditDialog, not BrowserWindow
       flags: :modal,

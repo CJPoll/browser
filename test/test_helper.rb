@@ -98,6 +98,67 @@ module TestHelpers
   def create_queue_manager(db_path)
     Managers::QueueManager.new(database: Repositories::QueueDatabase.new(db_path: db_path))
   end
+
+  # Builds a queue list view wired to a queue manager.
+  #
+  # The widget itself holds no manager -- it takes data sources and intents.
+  # This helper plays the part `BrowserWindow` plays in production and binds
+  # them, so a widget test can drive the real queue without the callback
+  # boilerplate appearing in every setup.
+  #
+  # @param queue_manager [Managers::QueueManager]
+  # @return [QueueListView]
+  def create_queue_list_view(queue_manager)
+    QueueListView.new(**queue_list_view_callbacks(queue_manager))
+  end
+
+  # The bindings `create_queue_list_view` uses, exposed so a test can override
+  # one of them (e.g. to count how often a data source is consulted).
+  #
+  # @param queue_manager [Managers::QueueManager]
+  # @return [Hash] Callback hash for QueueListView
+  def queue_list_view_callbacks(queue_manager)
+    {
+      create_favicon_image: create_favicon_creator,
+      get_entries: ->(tag_ids) { queue_manager.entries_for_filter(tag_ids) },
+      get_total_count: -> { queue_manager.count },
+      get_tags_for_entry: ->(entry_id) { queue_manager.tags_for_entry(entry_id) },
+      get_tag_usages: -> { queue_manager.tag_usage_counts },
+      find_tag_by_name: ->(tag_name) { queue_manager.find_tag_by_name(tag_name) },
+      find_tag_by_id: ->(tag_id) { queue_manager.find_tag_by_id(tag_id) },
+      on_remove_entry: ->(entry_id) { queue_manager.remove_by_id(entry_id) },
+      on_move_entry: ->(entry_id, position) { queue_manager.move(entry_id, position) }
+    }
+  end
+
+  # The bindings a tag edit dialog needs, played by this helper rather than
+  # `BrowserWindow`. Merge in `on_tags_changed:`/`on_error:` per test.
+  #
+  # @param queue_manager [Managers::QueueManager]
+  # @return [Hash] Callback hash for TagEditDialog
+  def tag_edit_dialog_callbacks(queue_manager)
+    {
+      get_all_tags: -> { queue_manager.all_tags },
+      get_assigned_tag_ids: ->(entry_id) { queue_manager.tags_for_entry(entry_id).map(&:id) },
+      on_assign_tag: ->(entry_id, tag_id) { queue_manager.assign_tag(entry_id, tag_id) },
+      on_unassign_tag: ->(entry_id, tag_id) { queue_manager.unassign_tag(entry_id, tag_id) },
+      on_create_tag: ->(tag_name) { queue_manager.create_or_find_tag(tag_name) }
+    }
+  end
+
+  # The bindings a history list view needs, played by this helper rather than
+  # `BrowserWindow`.
+  #
+  # @param history_manager [Managers::HistoryManager]
+  # @return [Hash] Callback hash for HistoryListView
+  def history_list_view_callbacks(history_manager)
+    {
+      create_favicon_image: create_favicon_creator,
+      get_search_results: ->(query, limit) { history_manager.search(query, limit) },
+      get_recent_visits: ->(limit) { history_manager.recent_visits(limit) },
+      on_delete_visit: ->(visit_id) { history_manager.delete_visit(visit_id) }
+    }
+  end
 end
 
 # Include in all tests

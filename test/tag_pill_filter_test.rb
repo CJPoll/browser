@@ -7,7 +7,7 @@ class TagPillFilterTest < Minitest::Test
     @temp_db.close
 
     @queue_manager = create_queue_manager(@temp_db_path)
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Add entries
     @queue_manager.add("https://example.com/1", "Entry 1")
@@ -58,7 +58,7 @@ class TagPillFilterTest < Minitest::Test
   def test_filter_by_tag_name_shows_correct_entries
     @queue_list_view.filter_by_tag_name("Gaming")
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     urls = entries.map { |e| e.url }
 
     # Only Entry 1 has Gaming

@@ -13,7 +13,7 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
     @entry = @queue_manager.find_by_url("https://example.com")
 
     # Create queue list view
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Track refresh calls
     @refresh_count = 0
@@ -37,8 +37,8 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
     # Create dialog
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: on_tags_changed
     )
 
@@ -63,8 +63,8 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
     # Create dialog
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: on_tags_changed
     )
 
@@ -91,8 +91,8 @@ class SidebarRefreshOnTagChangeTest < Minitest::Test
     # Create dialog
     dialog = TagEditDialog.new(
       nil,
-      @queue_manager,
       @entry,
+      **tag_edit_dialog_callbacks(@queue_manager),
       on_tags_changed: on_tags_changed
     )
 

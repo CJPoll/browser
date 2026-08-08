@@ -142,6 +142,11 @@ Current classes that already conform:
 | `lib/handlers/download_handler.rb` | Framework (WebKit signals -> Manager) |
 | `lib/ui/download_list_view.rb` | UI (data in, intent callbacks out) |
 | `lib/ui/site_permissions_window.rb` | UI (data in, intent callbacks out) |
+| `lib/ui/queue_list_view.rb` | UI (data in, intent callbacks out) |
+| `lib/ui/history_list_view.rb` | UI (data in, intent callbacks out) |
+| `lib/ui/tag_edit_dialog.rb` | UI (data in, intent callbacks out) |
+| `lib/domain/queue_sort.rb` | Domain (conforms) |
+| `lib/domain/tag_color.rb` | Domain (conforms) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are
@@ -164,8 +169,9 @@ different tables with different semantics:
 
 ```ruby
 # Framework (BrowserWindow) binds a UI callback to a Manager call
-@queue_list_view = UI::QueueListView.new(
-  on_entry_removed: ->(entry_id) { @queue_manager.remove_entry(entry_id) }
+queue_list_view = QueueListView.new(
+  get_entries: ->(tag_ids) { @queue_manager.entries_for_filter(tag_ids) },
+  on_remove_entry: ->(entry_id) { @queue_manager.remove_by_id(entry_id) }
 )
 
 # Manager orchestrates Repository + Domain: it fetches the state, Domain

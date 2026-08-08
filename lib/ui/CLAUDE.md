@@ -3,10 +3,8 @@
 GTK widgets. See `adrs/001-six-bucket-architecture.md` for the bucket rules;
 this file records the conventions this directory follows.
 
-> Several views in this directory still hold a manager (queue, history, tags).
-> The six-bucket remediation plan reroutes them; the conventions below
-> describe the target, which `download_list_view.rb` and
-> `autocomplete_popover.rb` already follow.
+No file in this directory holds a manager, repository or adapter. The
+conventions below are what keeps that true.
 
 ## Data in, intent out
 
@@ -41,6 +39,42 @@ Conventions:
   array instead.
 - The widget refreshes itself after emitting an intent. The Framework
   performs the call synchronously, so the next `get_*` already reflects it.
+- An intent callback may **return** something. `TagEditDialog`'s
+  `on_assign_tag` hands back the manager's result symbol
+  (`:assigned` / `:already_assigned` / `:invalid_entry`) because the dialog has
+  to react differently to each. That is still data in, intent out -- the
+  dialog says what the user wants and is told what came of it, without naming
+  who did it.
+- A lookup the widget needs to interpret its own state is a `find_*` callback
+  (`find_tag_by_name`, `find_tag_by_id`). The queue view keeps *which* tags are
+  filtered on -- that is view state -- but it cannot turn an id into a name on
+  its own.
+
+## Keep view state, push policy out
+
+`QueueListView` owns the set of ticked filter tags and the chosen sort mode:
+those are the user's place in the UI and belong to the widget. What those
+choices *mean* does not.
+
+- "No tags ticked" means every entry, and that is a queue rule, so
+  `Managers::QueueManager#entries_for_filter` decides it. The widget just
+  passes the ids it is holding.
+- The three sort orders are `Domain::QueueSort`, exhaustively tested without a
+  widget in sight.
+
+The test for the split: if the answer would be the same with no GTK in the
+process, it does not belong in this directory.
+
+## Do not let a widget reach through another widget
+
+`Sidebar` used to call `queue_list_view.queue_manager.find_tag_by_name(...)`
+to translate a filter pill back into a tag id. Two rules broken with one
+expression -- a UI component naming a manager, and a widget reading another
+widget's collaborator.
+
+The fix is to ask the owning widget for the *operation*, not its guts:
+`queue_list_view.remove_filter_tag_by_name(tag_name)`. When a widget needs
+another widget's state, the method it wants is almost always a verb.
 
 ## A list of lists takes section descriptors
 
@@ -114,3 +148,12 @@ remove_button.signal_connect("clicked") { remove_permission(section, permission)
 The test calls `remove_permission` directly and asserts the row disappeared.
 Only the one-line `signal_connect` stays untested, which is as close to the
 GTK boundary as this environment lets us get.
+
+This is not only about buttons. Setting `search_entry.text = "found"` does not
+emit `search-changed` under minitest either, so a handler that reads the
+widget back (`@search_query = @search_entry.text.strip`) is unreachable from a
+test *and* only works when the text came from the keyboard.
+`HistoryListView#search(query)` takes the query as an argument and the signal
+handler is `search(@search_entry.text)`. Rule of thumb: **the handler extracts,
+the method decides** -- anything a signal handler pulls out of a widget should
+become that method's parameter.

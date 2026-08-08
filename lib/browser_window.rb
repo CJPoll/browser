@@ -220,14 +220,29 @@ class BrowserWindow < Gtk::Window
     tab_list_view.on_tab_reordered = ->(from_index, to_index) { move_tab(from_index, to_index) }
     tab_list_view.on_tab_closed = ->(index) { close_tab_at_index(index) }
 
-    history_list_view = HistoryListView.new(@history_manager,
-                                             ->(favicon_data) { create_favicon_image(favicon_data) })
+    # The list views render history and the queue and report intent; this
+    # window binds each data source and each intent to a manager.
+    history_list_view = HistoryListView.new(
+      create_favicon_image: ->(favicon_data) { create_favicon_image(favicon_data) },
+      get_search_results: ->(query, limit) { @history_manager.search(query, limit) },
+      get_recent_visits: ->(limit) { @history_manager.recent_visits(limit) },
+      on_delete_visit: ->(visit_id) { @history_manager.delete_visit(visit_id) }
+    )
     history_list_view.on_history_item_selected = ->(visit) {
       current_tab.webview.load_uri(visit.uri) if current_tab
     }
 
-    queue_list_view = QueueListView.new(@queue_manager,
-                                         ->(favicon_data) { create_favicon_image(favicon_data) })
+    queue_list_view = QueueListView.new(
+      create_favicon_image: ->(favicon_data) { create_favicon_image(favicon_data) },
+      get_entries: ->(tag_ids) { @queue_manager.entries_for_filter(tag_ids) },
+      get_total_count: -> { @queue_manager.count },
+      get_tags_for_entry: ->(entry_id) { @queue_manager.tags_for_entry(entry_id) },
+      get_tag_usages: -> { @queue_manager.tag_usage_counts },
+      find_tag_by_name: ->(tag_name) { @queue_manager.find_tag_by_name(tag_name) },
+      find_tag_by_id: ->(tag_id) { @queue_manager.find_tag_by_id(tag_id) },
+      on_remove_entry: ->(entry_id) { @queue_manager.remove_by_id(entry_id) },
+      on_move_entry: ->(entry_id, position) { @queue_manager.move(entry_id, position) }
+    )
     queue_list_view.on_queue_item_selected = ->(entry) {
       current_tab.webview.load_uri(entry.url) if current_tab
     }
@@ -1879,8 +1894,12 @@ class BrowserWindow < Gtk::Window
   def show_tag_edit_dialog(entry)
     dialog = TagEditDialog.new(
       self,  # parent window
-      @queue_manager,
       entry,
+      get_all_tags: -> { @queue_manager.all_tags },
+      get_assigned_tag_ids: ->(entry_id) { @queue_manager.tags_for_entry(entry_id).map(&:id) },
+      on_assign_tag: ->(entry_id, tag_id) { @queue_manager.assign_tag(entry_id, tag_id) },
+      on_unassign_tag: ->(entry_id, tag_id) { @queue_manager.unassign_tag(entry_id, tag_id) },
+      on_create_tag: ->(tag_name) { @queue_manager.create_or_find_tag(tag_name) },
       on_tags_changed: -> {
         # Refresh queue sidebar if visible
         # Check mode atomically - no race condition because GTK main loop is single-threaded

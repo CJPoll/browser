@@ -7,7 +7,7 @@ class SortingTest < Minitest::Test
     @temp_db.close
 
     @queue_manager = create_queue_manager(@temp_db_path)
-    @queue_list_view = QueueListView.new(@queue_manager, create_favicon_creator)
+    @queue_list_view = create_queue_list_view(@queue_manager)
 
     # Add entries with different dates
     @queue_manager.add("https://example.com/a", "Zebra Video")
@@ -30,7 +30,7 @@ class SortingTest < Minitest::Test
   def test_default_sort_is_position
     assert_equal :position, @queue_list_view.current_sort_mode
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     titles = entries.map { |e| e.title }
 
     # Position order is insertion order
@@ -40,7 +40,7 @@ class SortingTest < Minitest::Test
   def test_sort_by_title_alphabetical
     @queue_list_view.set_sort_mode(:title)
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     titles = entries.map { |e| e.title }
 
     assert_equal ["Alpha Video", "Middle Video", "Zebra Video"], titles
@@ -52,7 +52,7 @@ class SortingTest < Minitest::Test
 
     @queue_list_view.set_sort_mode(:title)
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     titles = entries.map { |e| e.title }
 
     # aardvark should come first
@@ -62,7 +62,7 @@ class SortingTest < Minitest::Test
   def test_sort_by_date_newest_first
     @queue_list_view.set_sort_mode(:date_published)
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     titles = entries.map { |e| e.title }
 
     # Alpha Video (June) is newest, then Zebra (Jan), then Middle (NULL last)
@@ -72,7 +72,7 @@ class SortingTest < Minitest::Test
   def test_sort_by_date_nulls_last
     @queue_list_view.set_sort_mode(:date_published)
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     last_entry = entries.last
 
     # Middle Video has NULL date, should be last
@@ -95,7 +95,7 @@ class SortingTest < Minitest::Test
     # Apply title sort
     @queue_list_view.set_sort_mode(:title)
 
-    entries = @queue_list_view.send(:get_filtered_sorted_entries)
+    entries = @queue_list_view.send(:filtered_sorted_entries)
     titles = entries.map { |e| e.title }
 
     # Only entries with tag, sorted by title

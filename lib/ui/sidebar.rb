@@ -1,4 +1,5 @@
 require 'gtk3'
+require_relative '../domain/tag_color'
 
 # Sidebar container managing tabs/history/queue view switching
 class Sidebar
@@ -413,8 +414,9 @@ class Sidebar
     # Container box
     pill_box = Gtk::Box.new(:horizontal, 2)
 
-    # Get color from queue_list_view
-    r, g, b = queue_list_view.tag_color_rgb(tag_name)
+    # A tag's colour comes from its name, so the pill here matches the pill in
+    # the queue row without either widget having to be told about the other.
+    r, g, b = Domain::TagColor.rgb(tag_name)
 
     # EventBox for background color
     event_box = Gtk::EventBox.new
@@ -455,8 +457,7 @@ class Sidebar
 
     # Remove filter on click
     remove_button.signal_connect("clicked") do
-      tag = queue_list_view.queue_manager.find_tag_by_name(tag_name)
-      queue_list_view.remove_filter_tag(tag.id) if tag
+      queue_list_view.remove_filter_tag_by_name(tag_name)
     end
 
     inner_box.pack_start(remove_button, expand: false, fill: false, padding: 0)

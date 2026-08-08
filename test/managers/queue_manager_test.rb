@@ -563,6 +563,36 @@ class ManagersQueueManagerTest < Minitest::Test
     assert_equal [], @manager.entries_with_tag(nil)
   end
 
+  def test_entries_for_filter_returns_everything_when_no_tags_are_selected
+    queued_entry_id('https://example.com/1')
+    queued_entry_id('https://example.com/2')
+
+    assert_equal %w[https://example.com/1 https://example.com/2],
+                 @manager.entries_for_filter([]).map(&:url)
+  end
+
+  def test_entries_for_filter_returns_everything_for_a_nil_filter
+    queued_entry_id('https://example.com/1')
+
+    assert_equal %w[https://example.com/1], @manager.entries_for_filter(nil).map(&:url)
+  end
+
+  def test_entries_for_filter_narrows_to_carriers_of_every_selected_tag
+    tagged = queued_entry_id('https://example.com/1')
+    queued_entry_id('https://example.com/2')
+    gaming = @manager.create_or_find_tag('Gaming')
+    @manager.assign_tag(tagged, gaming.id)
+
+    assert_equal %w[https://example.com/1], @manager.entries_for_filter([gaming.id]).map(&:url)
+  end
+
+  def test_entries_for_filter_is_empty_when_nothing_carries_the_tag
+    queued_entry_id('https://example.com/1')
+    orphan = @manager.create_or_find_tag('Orphan')
+
+    assert_equal [], @manager.entries_for_filter([orphan.id])
+  end
+
   def test_tag_usage_counts_reports_carriers
     entry_id = queued_entry_id
     @manager.assign_tag_by_name(entry_id, 'Gaming')

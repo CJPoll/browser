@@ -2,17 +2,22 @@ require 'gtk3'
 require 'cgi'
 
 # Sidebar view for displaying browsing history
+#
+# Holds no manager, repository or adapter. History arrives through `get_*`
+# callbacks and the remove button reports intent through `on_delete_visit`;
+# the Framework (`BrowserWindow`) binds both to `Managers::HistoryManager`.
 class HistoryListView
   attr_reader :list_widget, :search_entry
 
   # Creates a new history list view
   #
-  # @param history_manager [Managers::HistoryManager] History use cases, supplying
-  #   Domain::Visit and Domain::Page objects
-  # @param favicon_image_creator [Proc] Proc that creates favicon images: ->(favicon_data) { Gtk::Image }
-  def initialize(history_manager, favicon_image_creator)
-    @history_manager = history_manager
-    @favicon_image_creator = favicon_image_creator
+  # @param callbacks [Hash] Data sources and intents:
+  #   - :create_favicon_image => ->(favicon_data) { Gtk::Image }
+  #   - :get_search_results => ->(query, limit) { Array<Domain::Page> }
+  #   - :get_recent_visits => ->(limit) { Array<Domain::Visit> }
+  #   - :on_delete_visit => ->(visit_id) { ... }
+  def initialize(callbacks = {})
+    @callbacks = callbacks
     @list_widget = Gtk::ListBox.new
     @list_widget.selection_mode = :single
 
@@ -23,9 +28,7 @@ class HistoryListView
     @search_entry = Gtk::SearchEntry.new
     @search_entry.placeholder_text = "Search history..."
     @search_entry.signal_connect("search-changed") do
-      query = @search_entry.text.strip
-      @search_query = query.empty? ? nil : query
-      refresh
+      search(@search_entry.text)
     end
 
     # Callback invoked when history item is clicked
@@ -46,6 +49,16 @@ class HistoryListView
     @on_history_item_selected = callback
   end
 
+  # Narrows the list to pages matching the query, or restores recent visits
+  #
+  # @param query [String] Raw search text; blank restores the recent list
+  # @return [void]
+  def search(query)
+    stripped = query.strip
+    @search_query = stripped.empty? ? nil : stripped
+    refresh
+  end
+
   # Refreshes the history list display
   #
   # @param limit [Integer] Maximum number of visits to show (default: 50)
@@ -56,7 +69,7 @@ class HistoryListView
 
     # Get history items (search results or recent visits)
     if @search_query && !@search_query.empty?
-      pages = @history_manager.search(@search_query, limit)
+      pages = @callbacks[:get_search_results]&.call(@search_query, limit) || []
 
       if pages.empty?
         # Show "no results" message
@@ -67,9 +80,9 @@ class HistoryListView
       else
         pages.each do |page|
           # Known wart, preserved: the remove button on a search row passes the
-          # *page* id to delete_visit, so it deletes whichever visit happens to
-          # share that id. Search rows also carry no favicon, because the search
-          # projection does not select one.
+          # *page* id to the delete intent, so it deletes whichever visit happens
+          # to share that id. Search rows also carry no favicon, because the
+          # search projection does not select one.
           row = create_history_row(page,
                                    timestamp: page.last_visited_at,
                                    delete_id: page.id)
@@ -78,7 +91,7 @@ class HistoryListView
       end
     else
       # Show recent visits
-      visits = @history_manager.recent_visits(limit)
+      visits = @callbacks[:get_recent_visits]&.call(limit) || []
 
       visits.each do |visit|
         row = create_history_row(visit, timestamp: visit.visited_at, delete_id: visit.id)
@@ -87,6 +100,15 @@ class HistoryListView
     end
 
     @list_widget.show_all
+  end
+
+  # Asks for a visit to be forgotten, then redraws
+  #
+  # @param visit_id [Integer, nil] Visit the user wants gone
+  # @return [void]
+  def delete_visit(visit_id)
+    @callbacks[:on_delete_visit]&.call(visit_id)
+    refresh
   end
 
   private
@@ -109,7 +131,7 @@ class HistoryListView
     hbox.margin_end = 12
 
     # Favicon
-    favicon_image = @favicon_image_creator.call(entry.favicon)
+    favicon_image = @callbacks[:create_favicon_image].call(entry.favicon)
     favicon_image.valign = :start
     hbox.pack_start(favicon_image, expand: false, fill: false, padding: 0)
 
@@ -145,8 +167,7 @@ class HistoryListView
     remove_button = Gtk::Button.new(label: "×")
     remove_button.relief = :none
     remove_button.signal_connect("clicked") do
-      @history_manager.delete_visit(delete_id)
-      refresh()  # Refresh after removal
+      delete_visit(delete_id)
       true  # Stop event propagation to prevent row-activated signal
     end
     hbox.pack_start(remove_button, expand: false, fill: false, padding: 0)
