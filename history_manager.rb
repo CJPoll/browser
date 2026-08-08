@@ -1,6 +1,7 @@
 require 'sqlite3'
 require 'uri'
 require 'fileutils'
+require_relative 'lib/domain/url_host'
 
 class HistoryManager
   def initialize(db_path = nil)
@@ -59,7 +60,7 @@ class HistoryManager
 
     begin
       uri = URI.parse(url)
-      authority = extract_authority(uri)
+      authority = Domain::UrlHost.authority(uri)
       return unless authority
 
       now = Time.now.to_i
@@ -245,16 +246,6 @@ class HistoryManager
   end
 
   private
-
-  def extract_authority(uri)
-    # For http/https, use host
-    if uri.scheme =~ /^https?$/
-      uri.host
-    else
-      # For other schemes, use the full authority (host:port)
-      uri.host ? "#{uri.host}#{uri.port ? ":#{uri.port}" : ''}" : nil
-    end
-  end
 
   def get_or_create_site(authority, timestamp)
     site_id = @db.get_first_value("SELECT id FROM sites WHERE authority = ?", [authority])

@@ -106,7 +106,13 @@ Current classes that already conform:
 |------|--------|
 | `lib/domain/frecency.rb` | Domain (conforms -- `now` is a required parameter) |
 | `lib/domain/download.rb` | Domain (conforms -- `created_at:`/`now:` supplied by the caller) |
-| `lib/adapters/download_repository.rb` | Repositories (move to `lib/repositories/`) |
+| `lib/domain/url_matcher.rb` | Domain (conforms) |
+| `lib/domain/url_host.rb` | Domain (conforms) |
+| `lib/domain/url_classifier.rb` | Domain (conforms) |
+| `lib/domain/external_schemes.rb` | Domain (conforms) |
+| `lib/domain/oauth_popup.rb` | Domain (conforms) |
+| `lib/domain/tag_name.rb` | Domain (conforms) |
+| `lib/repositories/download_repository.rb` | Repositories |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
 | `lib/managers/autocomplete_manager.rb` | Managers |
 | `lib/managers/download_coordinator.rb` | Managers |
@@ -121,8 +127,8 @@ different tables with different semantics:
 | `lib/managers/media_permission_manager.rb` | `Repositories::MediaPermissionRepository` (`media_permissions`) |
 | `lib/managers/notification_permission_manager.rb` | `Repositories::NotificationPermissionRepository` (`notification_permissions`) |
 | `lib/managers/certificate_exception_manager.rb` | `Repositories::CertificateExceptionRepository` (`certificate_exceptions`) |
-| `history_manager.rb` (root) | `Repositories::HistoryRepository` (`sites`, `pages`, `visits`); `extract_authority` moves to Domain |
-| `queue_manager.rb` (root) | `Repositories::QueueRepository` (`queue_entries`) + `Repositories::TagRepository` (`tags`, `queue_entry_tag_assignments`), sharing `queue.db`; `urls_match?` and tag-name validation move to Domain |
+| `history_manager.rb` (root) | `Repositories::HistoryRepository` (`sites`, `pages`, `visits`); its authority logic already lives in `Domain::UrlHost` |
+| `queue_manager.rb` (root) | `Repositories::QueueRepository` (`queue_entries`) + `Repositories::TagRepository` (`tags`, `queue_entry_tag_assignments`), sharing `queue.db`; its URL matching and tag-name rules already live in `Domain::UrlMatcher` and `Domain::TagName` |
 | `download_manager.rb` (root) | Superseded by the existing `DownloadRepository` + `DownloadCoordinator` stack once wired in |
 | `lib/managers/session_manager.rb` | Adapters (JSON file store, not a database) |
 | `lib/managers/settings_manager.rb` | Adapters (JSON file store, not a database) |

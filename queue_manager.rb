@@ -3,6 +3,8 @@ require 'uri'
 require 'fileutils'
 require 'monitor'
 require 'cgi'
+require_relative 'lib/domain/tag_name'
+require_relative 'lib/domain/url_matcher'
 
 class QueueManager
   def initialize(db_path = nil)
@@ -116,7 +118,7 @@ class QueueManager
       entries = @db.execute(
         "SELECT id, url, title, favicon, position, added_at, date FROM queue_entries"
       )
-      entries.find { |entry| urls_match?(entry['url'], url) }
+      entries.find { |entry| Domain::UrlMatcher.match?(entry['url'], url) }
     end
   end
 
@@ -377,13 +379,9 @@ class QueueManager
   #   tag_id = queue_manager.create_or_find_tag("  Gaming  ")    # Strips whitespace
   #   result = queue_manager.create_or_find_tag("a" * 101)       # Returns nil (exceeds 100 chars)
   def create_or_find_tag(tag_name)
-    return nil if tag_name.nil? || tag_name.strip.empty?
+    return nil unless Domain::TagName.valid?(tag_name)
 
-    # Normalize whitespace: strip leading/trailing, collapse internal to single spaces
-    tag_name = tag_name.strip.gsub(/\s+/, ' ')
-
-    # Validate length (application-level check before database constraint)
-    return nil if tag_name.length > 100
+    tag_name = Domain::TagName.normalize(tag_name)
 
     @mutex.synchronize do
       # Check for existing tag (case-insensitive)
@@ -414,13 +412,8 @@ class QueueManager
   #   tag = queue_manager.find_tag_by_name("youtube")        # Case-insensitive
   #   tag = queue_manager.find_tag_by_name("NonExistent")    # Returns nil
   def find_tag_by_name(tag_name)
-    return nil if tag_name.nil?
-
-    # Normalize whitespace first (BEFORE empty check)
-    tag_name = tag_name.strip.gsub(/\s+/, ' ')
-
-    # Check if empty AFTER normalization
-    return nil if tag_name.empty?
+    tag_name = Domain::TagName.normalize(tag_name)
+    return nil unless tag_name
 
     @db.get_first_row(
       "SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE",
@@ -701,51 +694,4 @@ class QueueManager
     @db.changes > 0 ? :deleted : :not_found
   end
 
-  private
-
-  # Compares two URLs with bidirectional subset parameter matching
-  #
-  # Handles cases where:
-  # - Queue URL has extra params (YouTube strips them during playback)
-  # - Current URL has extra params (timestamp added during playback)
-  #
-  # @param queue_url [String] URL from queue entry
-  # @param current_url [String] Current tab's URL
-  # @return [Boolean] True if URLs match (same base + compatible params)
-  def urls_match?(queue_url, current_url)
-    # Parse both URLs
-    begin
-      queue_uri = URI.parse(queue_url)
-      current_uri = URI.parse(current_url)
-    rescue URI::InvalidURIError
-      return false
-    end
-
-    # Compare base URLs (scheme, host, path) - ignore trailing slashes
-    queue_base = "#{queue_uri.scheme}://#{queue_uri.host}#{queue_uri.path}".sub(/\/$/, '')
-    current_base = "#{current_uri.scheme}://#{current_uri.host}#{current_uri.path}".sub(/\/$/, '')
-    return false unless queue_base == current_base
-
-    # Parse query parameters
-    queue_params = queue_uri.query ? CGI.parse(queue_uri.query) : {}
-    current_params = current_uri.query ? CGI.parse(current_uri.query) : {}
-
-    # Check if either URL's params are a subset of the other
-    # This handles both cases:
-    # 1. Queue has extra params (YouTube strips them) - current is subset of queue
-    # 2. Current has extra params - queue is subset of current
-    params_are_subset?(queue_params, current_params) || params_are_subset?(current_params, queue_params)
-  end
-
-  # Checks if subset params are all present in superset params
-  #
-  # @param subset_params [Hash] Parameters that should all be in superset
-  # @param superset_params [Hash] Parameters that should contain all of subset
-  # @return [Boolean] True if all subset params exist in superset with same values
-  def params_are_subset?(subset_params, superset_params)
-    # Check if all params in subset exist in superset with same values
-    subset_params.all? do |key, values|
-      superset_params[key] == values
-    end
-  end
 end

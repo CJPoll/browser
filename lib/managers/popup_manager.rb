@@ -1,6 +1,6 @@
 require 'sqlite3'
-require 'uri'
 require 'fileutils'
+require_relative '../domain/url_host'
 
 # Manages popup exceptions (whitelist) for browser popups
 class PopupManager
@@ -37,7 +37,7 @@ class PopupManager
   # @param url [String] URL to check (extracts host)
   # @return [Boolean] True if host is whitelisted
   def allowed?(url)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return false unless host
 
     result = @db.get_first_value(
@@ -52,7 +52,7 @@ class PopupManager
   # @param url [String] URL to whitelist (extracts host)
   # @return [Boolean] True if added, false if already exists or invalid
   def allow(url)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return false unless host
 
     begin
@@ -72,7 +72,7 @@ class PopupManager
   # @param url [String] URL to remove (extracts host)
   # @return [Boolean] True if removed, false if not found or invalid
   def block(url)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return false unless host
 
     @db.execute("DELETE FROM popup_exceptions WHERE host = ?", [host])
@@ -84,22 +84,5 @@ class PopupManager
   # @return [Array<Hash>] Array of {id, host, added_at} hashes
   def all
     @db.execute("SELECT id, host, added_at FROM popup_exceptions ORDER BY host ASC")
-  end
-
-  private
-
-  # Extracts host from URL
-  #
-  # @param url [String] URL to extract host from
-  # @return [String, nil] Host or nil if invalid
-  def extract_host(url)
-    return nil unless url
-
-    begin
-      uri = URI.parse(url)
-      uri.host
-    rescue URI::InvalidURIError
-      nil
-    end
   end
 end

@@ -15,9 +15,54 @@ the bucket rules; this file records the conventions this directory follows.
 - **No SQL awareness**: repositories map rows to Domain objects in a private
   `build_*`/`from_row` method on the *repository* side. Domain objects never
   know about columns or tables.
-- **Namespacing**: current Domain files are top-level constants (`Download`,
-  `Frecency`). The remediation plan introduces `Domain::`-namespaced modules;
-  expect a mix during the transition.
+- **Namespacing**: new Domain code is `Domain::`-namespaced, written in nested
+  module form (`module Domain` / `module UrlMatcher`) so the namespace is
+  always defined regardless of require order. `Download` and `Frecency` are
+  older top-level constants; expect a mix during the transition.
+- **Requires**: each Domain file requires its own stdlib dependencies (`uri`,
+  `cgi`) and is required directly by its callers via `require_relative`. There
+  is no autoloader, so a caller that names `Domain::X` must require
+  `lib/domain/x`.
+
+## Shared modules
+
+Before writing a URL or tag helper, check whether one already exists -- these
+were extracted precisely because the same logic had been written twice:
+
+| Module | Answers |
+| --- | --- |
+| `Domain::UrlMatcher` | do these two URLs refer to the same page? |
+| `Domain::UrlHost` | what host/authority does this URL name? |
+| `Domain::UrlClassifier` | did the user type a URL, a path, or a search? |
+| `Domain::ExternalSchemes` | should another application handle this URL? |
+| `Domain::OauthPopup` | does this URL need a real popup window? |
+| `Domain::TagName` | what is the canonical form of this tag name? |
+| `Domain::Frecency` | how relevant is this history entry? |
+
+## Return a decision, not a side effect
+
+When the pure part of a computation ends where the impure part begins, return
+the decision and let the caller act on it. `UrlClassifier.classify` returns
+`:home_path` rather than a `file://` URL because expanding `~` reads the
+environment -- so the handler does the expansion and Domain keeps the
+heuristics:
+
+```ruby
+case Domain::UrlClassifier.classify(text)
+when :home_path then "file://#{File.expand_path(text)}"
+...
+```
+
+This keeps the branching logic testable without stubbing `ENV`.
+
+## Preserved warts are pinned by tests
+
+Logic extracted during the remediation is moved verbatim, warts included (for
+example `UrlMatcher` ignores the port, and `ExternalSchemes` cannot recognise
+`mailto:` because it splits on `://`). Give each one a named test that asserts
+the current behaviour and a comment saying it is a known wart. A wart with a
+test is a documented decision; a wart without one gets "fixed" by the next
+reader and silently changes behaviour.
 
 ## The clock is a required parameter
 

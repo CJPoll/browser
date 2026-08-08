@@ -1,6 +1,6 @@
 require 'sqlite3'
-require 'uri'
 require 'fileutils'
+require_relative '../domain/url_host'
 
 # Manages media device (camera/microphone) permission whitelist
 class MediaPermissionManager
@@ -40,7 +40,7 @@ class MediaPermissionManager
   # @param permission_type [Symbol] :audio, :video, or :audio_video
   # @return [Boolean] True if host is allowed for this permission
   def allowed?(url, permission_type)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return false unless host
 
     type_str = permission_type.to_s
@@ -57,7 +57,7 @@ class MediaPermissionManager
   # @param permission_type [Symbol] :audio, :video, or :audio_video
   # @return [Boolean] True if added, false if already exists or invalid
   def allow(url, permission_type)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return false unless host
 
     type_str = permission_type.to_s
@@ -79,7 +79,7 @@ class MediaPermissionManager
   # @param permission_type [Symbol, nil] Permission type to remove, or nil for all
   # @return [Boolean] True if removed, false if not found or invalid
   def revoke(url, permission_type = nil)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return false unless host
 
     if permission_type
@@ -98,7 +98,7 @@ class MediaPermissionManager
   # @param url [String] URL to check (extracts host)
   # @return [Array<String>] Array of permission types for this host
   def permissions_for(url)
-    host = extract_host(url)
+    host = Domain::UrlHost.host(url)
     return [] unless host
 
     @db.execute(
@@ -112,22 +112,5 @@ class MediaPermissionManager
   # @return [Array<Hash>] Array of {id, host, permission_type, added_at} hashes
   def all
     @db.execute("SELECT id, host, permission_type, added_at FROM media_permissions ORDER BY host ASC")
-  end
-
-  private
-
-  # Extracts host from URL
-  #
-  # @param url [String] URL to extract host from
-  # @return [String, nil] Host or nil if invalid
-  def extract_host(url)
-    return nil unless url
-
-    begin
-      uri = URI.parse(url)
-      uri.host
-    rescue URI::InvalidURIError
-      nil
-    end
   end
 end

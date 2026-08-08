@@ -1,4 +1,6 @@
-require 'cgi'
+require 'uri'
+require_relative '../domain/external_schemes'
+require_relative '../domain/url_classifier'
 
 # Handles URL navigation logic (parsing, search detection)
 #
@@ -17,16 +19,6 @@ class NavigationHandler
     @callbacks = callbacks
   end
 
-  # URL schemes that should be delegated to xdg-open instead of loaded in WebKit
-  # These are application-specific protocols handled by external programs
-  EXTERNAL_SCHEMES = %w[
-    warp spotify discord slack steam zoommtg zoomus
-    tg telegram signal viber whatsapp
-    vscode vscodium cursor
-    obsidian notion
-    mailto tel sms
-  ].freeze
-
   # Navigates to the given URL or search query
   #
   # @param text [String] The text from the URL entry
@@ -37,30 +29,12 @@ class NavigationHandler
     text_stripped = text.strip
 
     # Check for external URL schemes that should be handled by the system
-    if external_scheme?(text_stripped)
+    if Domain::ExternalSchemes.external?(text_stripped)
       system("xdg-open", text_stripped)
       return
     end
 
-    # Check if it looks like a URL (has a TLD and no spaces)
-    # or if it already starts with a protocol
-    if text_stripped.start_with?("http://", "https://", "file://")
-      url = text_stripped
-    elsif text_stripped.start_with?("/")
-      # Absolute file path - convert to file:// URL
-      url = "file://#{text_stripped}"
-    elsif text_stripped.start_with?("~/")
-      # Home-relative path - expand and convert to file:// URL
-      expanded = File.expand_path(text_stripped)
-      url = "file://#{expanded}"
-    elsif text_stripped.match?(/^[\w-]+\.[\w.-]+/) && !text_stripped.include?(' ')
-      # Looks like a domain (e.g., "example.com" or "github.com")
-      url = "https://#{text_stripped}"
-    else
-      # Treat as a search query
-      query = CGI.escape(text_stripped)
-      url = "https://www.google.com/search?q=#{query}"
-    end
+    url = build_url(text_stripped)
 
     # Normalize URL (e.g., rewrite youtube.com to www.youtube.com)
     url = normalize_url(url)
@@ -80,15 +54,21 @@ class NavigationHandler
 
   private
 
-  # Checks if a URL uses an external scheme that should be handled by the system
+  # Turns URL-bar text into the URL to load
   #
-  # @param url [String] The URL to check
-  # @return [Boolean] true if the URL uses an external scheme
-  def external_scheme?(url)
-    return false unless url.include?("://")
-
-    scheme = url.split("://").first.downcase
-    EXTERNAL_SCHEMES.include?(scheme)
+  # Home-relative paths are expanded here rather than in Domain: expansion
+  # reads the environment, which Domain may not do.
+  #
+  # @param text [String] Stripped text from the URL entry
+  # @return [String] The URL to load
+  def build_url(text)
+    case Domain::UrlClassifier.classify(text)
+    when :absolute_url then text
+    when :absolute_path then "file://#{text}"
+    when :home_path then "file://#{File.expand_path(text)}"
+    when :domain then "https://#{text}"
+    else Domain::UrlClassifier.search_url(text)
+    end
   end
 
   # Normalizes URLs for sites that require specific subdomains

@@ -30,6 +30,8 @@ require_relative 'ui/download_notification_bar'
 require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
+require_relative 'domain/oauth_popup'
+require_relative 'domain/url_classifier'
 require_relative 'managers/article_extractor_js'
 require_relative 'managers/certificate_exception_manager'
 require_relative 'managers/autocomplete_manager'
@@ -857,7 +859,7 @@ class BrowserWindow < Gtk::Window
         # Check if destination host is whitelisted
         if @popup_manager.allowed?(destination_url)
           # Check if this is an OAuth URL that needs a floating window
-          if oauth_popup_url?(destination_url)
+          if Domain::OauthPopup.popup?(destination_url)
             # Create popup window for OAuth
             popup = PopupWindow.new(tab.webview, self)
             puts "OAuth popup opened: #{destination_url}"
@@ -993,8 +995,8 @@ class BrowserWindow < Gtk::Window
   #
   # @param query [String] User's search query
   def handle_autocomplete(query)
-    # Skip for URLs (contain :// or start with localhost/IP)
-    if query.include?("://") || query.match?(/^(localhost|127\.|192\.168\.|10\.)/)
+    # Skip text that already names a location -- there is nothing to suggest
+    if Domain::UrlClassifier.explicit_address?(query)
       @autocomplete_popover.hide
       return
     end
@@ -1951,7 +1953,7 @@ class BrowserWindow < Gtk::Window
         @popup_notification_hosts.delete(allowed_host)
 
         # Automatically open the popup
-        if oauth_popup_url?(destination_url)
+        if Domain::OauthPopup.popup?(destination_url)
           # OAuth needs a floating window
           popup = PopupWindow.new(related_view, self)
           popup.webview.load_uri(destination_url)
@@ -2008,39 +2010,6 @@ class BrowserWindow < Gtk::Window
     @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
     @content_vbox.reorder_child(notification_bar.widget, 0)
     notification_bar.widget.show_all
-  end
-
-  # Checks if a URL is an OAuth popup that needs a floating window
-  # These URLs need separate windows to properly communicate back to the opener
-  #
-  # @param url [String] URL to check
-  # @return [Boolean] True if this is an OAuth URL
-  def oauth_popup_url?(url)
-    return false unless url
-
-    begin
-      uri = URI.parse(url)
-      host = uri.host&.downcase
-
-      # Google OAuth
-      return true if host == 'accounts.google.com'
-
-      # Firebase auth handlers (used by many sites for OAuth)
-      return true if host&.end_with?('.firebaseapp.com') && uri.path&.include?('auth')
-
-      # Apple OAuth
-      return true if host == 'appleid.apple.com'
-
-      # Microsoft OAuth
-      return true if host == 'login.microsoftonline.com' || host == 'login.live.com'
-
-      # GitHub OAuth
-      return true if host == 'github.com' && uri.path&.start_with?('/login/oauth')
-
-      false
-    rescue URI::InvalidURIError
-      false
-    end
   end
 
   # Shows a download completion notification bar

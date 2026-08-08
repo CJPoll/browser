@@ -1,20 +1,11 @@
 require 'gtk3'
+require_relative '../domain/external_schemes'
 
 # Handles mouse button events (back/forward navigation, Ctrl+Click)
 #
 # Thread Safety: Assumes single-threaded GTK main loop execution.
 # All callbacks are expected to run synchronously on the main thread.
 class MouseHandler
-  # URL schemes that should be delegated to xdg-open instead of loaded in WebKit
-  # These are application-specific protocols handled by external programs
-  EXTERNAL_SCHEMES = %w[
-    warp spotify discord slack steam zoommtg zoomus
-    tg telegram signal viber whatsapp
-    vscode vscodium cursor
-    obsidian notion
-    mailto tel sms
-  ].freeze
-
   # Creates a new mouse handler
   #
   # @param callbacks [Hash] Hash of callback procs:
@@ -84,7 +75,7 @@ class MouseHandler
     uri = uri_request.uri
 
     # Check for external URL schemes that should be handled by the system
-    if uri && external_scheme?(uri)
+    if Domain::ExternalSchemes.external?(uri)
       decision.ignore
       system("xdg-open", uri)
       return true
@@ -127,17 +118,6 @@ class MouseHandler
   end
 
   private
-
-  # Checks if a URL uses an external scheme that should be handled by the system
-  #
-  # @param url [String] The URL to check
-  # @return [Boolean] true if the URL uses an external scheme
-  def external_scheme?(url)
-    return false unless url.include?("://")
-
-    scheme = url.split("://").first.downcase
-    EXTERNAL_SCHEMES.include?(scheme)
-  end
 
   # Validates that all required callbacks are present
   #

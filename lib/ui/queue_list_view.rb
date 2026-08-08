@@ -1,6 +1,7 @@
 require 'gtk3'
 require 'cgi'
 require 'uri'
+require_relative '../domain/url_matcher'
 
 # Sidebar view for displaying and managing the URL queue
 class QueueListView
@@ -250,7 +251,7 @@ class QueueListView
         @list_widget.add(row)
 
         # Highlight the queue entry that matches the current tab's URL
-        if current_url && entry['url'] && urls_match?(entry['url'], current_url)
+        if Domain::UrlMatcher.match?(entry['url'], current_url)
           @list_widget.select_row(row)
         end
       end
@@ -621,48 +622,6 @@ class QueueListView
   def on_queue_item_clicked(row)
     entry = row.instance_variable_get(:@queue_entry)
     @on_queue_item_selected.call(entry) if @on_queue_item_selected && entry
-  end
-
-  # Compares two URLs with bidirectional subset parameter matching
-  #
-  # @param queue_url [String] URL from queue entry
-  # @param current_url [String] Current tab's URL
-  # @return [Boolean] True if URLs match (same base + compatible params)
-  def urls_match?(queue_url, current_url)
-    # Parse both URLs
-    begin
-      queue_uri = URI.parse(queue_url)
-      current_uri = URI.parse(current_url)
-    rescue URI::InvalidURIError
-      return false
-    end
-
-    # Compare base URLs (scheme, host, path) - ignore trailing slashes
-    queue_base = "#{queue_uri.scheme}://#{queue_uri.host}#{queue_uri.path}".sub(/\/$/, '')
-    current_base = "#{current_uri.scheme}://#{current_uri.host}#{current_uri.path}".sub(/\/$/, '')
-    return false unless queue_base == current_base
-
-    # Parse query parameters
-    queue_params = queue_uri.query ? CGI.parse(queue_uri.query) : {}
-    current_params = current_uri.query ? CGI.parse(current_uri.query) : {}
-
-    # Check if either URL's params are a subset of the other
-    # This handles both cases:
-    # 1. Queue has extra params (YouTube strips them) - current is subset of queue
-    # 2. Current has extra params - queue is subset of current
-    params_are_subset?(queue_params, current_params) || params_are_subset?(current_params, queue_params)
-  end
-
-  # Checks if subset params are all present in superset params
-  #
-  # @param subset_params [Hash] Parameters that should all be in superset
-  # @param superset_params [Hash] Parameters that should contain all of subset
-  # @return [Boolean] True if all subset params exist in superset with same values
-  def params_are_subset?(subset_params, superset_params)
-    # Check if all params in subset exist in superset with same values
-    subset_params.all? do |key, values|
-      superset_params[key] == values
-    end
   end
 
   private
