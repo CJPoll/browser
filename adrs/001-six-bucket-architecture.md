@@ -163,6 +163,12 @@ Current classes that already conform:
 | `lib/domain/tag_color.rb` | Domain (conforms) |
 | `lib/domain/session_snapshot.rb` | Domain (conforms) |
 | `lib/domain/ipc_message.rb` | Domain (conforms -- `timestamp` supplied by the caller) |
+| `lib/adapters/http_fetcher.rb` | Adapters (returns bodies; failures reach the caller) |
+| `lib/adapters/auto_tag_rules_store.rb` | Adapters (reads `config/auto_tag_rules.json`) |
+| `lib/domain/page_metadata.rb` | Domain (parses HTML/JSON-LD/oEmbed; fetches nothing) |
+| `lib/domain/auto_tagger.rb` | Domain (rules arrive as data) |
+| `lib/domain/article_extractor_js.rb` | Domain (constant script module) |
+| `lib/managers/queue_metadata_worker.rb` | Managers (owns the thread and the order of the steps) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are
@@ -174,8 +180,6 @@ different tables with different semantics:
 | `history_manager.rb` (root) | Deleted -- superseded by `Repositories::HistoryRepository` (`sites`, `pages`, `visits`) plus `Managers::HistoryManager`, which owns the clock and the visit-deduplication policy and resolves authorities via `Domain::UrlHost` |
 | `queue_manager.rb` (root) | Deleted -- superseded by `Repositories::QueueRepository` + `Repositories::TagRepository` over a shared `Repositories::QueueDatabase`, plus `Managers::QueueManager` and `Managers::QueueNavigationManager` |
 | `download_manager.rb` (root) | Deleted -- superseded by `Repositories::DownloadRepository` + `DownloadCoordinator`, wired in through `DownloadHandler` |
-| `lib/managers/auto_tagger.rb` | Domain (already pure) |
-| `lib/managers/article_extractor_js.rb` | Domain (constant script module, already pure) |
 
 ## Examples
 
