@@ -23,6 +23,16 @@ The browser will start with a 1200x768 window. If no URL provided, it restores t
 
 ## Architecture
 
+**Bucket rules**: Every class belongs to exactly one of six buckets --
+Framework, UI Components, Repositories, Adapters, Domain, Managers -- with
+constrained call directions between them. See
+`adrs/001-six-bucket-architecture.md` for the definition, the allowed-calls
+matrix, and the target bucket assignments for existing code. Highlights: UI
+must not call Managers/Repositories/Adapters (bubble events up via
+callbacks); Framework must not call Repositories/Adapters (go through a
+Manager); all SQL lives in `lib/repositories/`; Domain is pure (no IO, no
+clock reads).
+
 ### Core Components
 
 **BrowserApplication** (`lib/browser_application.rb`):

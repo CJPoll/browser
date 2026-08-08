@@ -2,7 +2,7 @@ require 'minitest/autorun'
 require 'fileutils'
 require 'tempfile'
 require_relative '../../lib/domain/download'
-require_relative '../../lib/adapters/download_repository'
+require_relative '../../lib/repositories/download_repository'
 require_relative '../../lib/managers/download_coordinator'
 
 # Integration test for the download flow without mocks
@@ -13,7 +13,7 @@ class DownloadFlowTest < Minitest::Test
     @temp_db_path = @temp_db.path
     @temp_db.close
 
-    @repository = DownloadRepository.new(db_path: @temp_db_path)
+    @repository = Repositories::DownloadRepository.new(db_path: @temp_db_path)
     @coordinator = DownloadCoordinator.new(@repository)
   end
 

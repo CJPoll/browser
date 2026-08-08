@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require_relative '../managers/download_coordinator'
-require_relative '../adapters/download_repository'
 
 # DownloadHandler connects WebKit download signals to the DownloadCoordinator.
 #

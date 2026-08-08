@@ -3,12 +3,12 @@
 require_relative '../domain/download'
 
 # DownloadCoordinator orchestrates download operations between the UI layer
-# and the DownloadRepository adapter.
+# and Repositories::DownloadRepository.
 #
 # This is a Manager layer component that:
-# - Coordinates between adapters (DownloadRepository) and domain (Download)
+# - Coordinates between the repository and domain (Download)
 # - Contains no business logic (delegates to Download domain object)
-# - Contains no persistence logic (delegates to DownloadRepository)
+# - Contains no persistence logic (delegates to the repository)
 # - Returns Download domain objects to UI
 #
 # Thread Safety: All operations are synchronous. Caller is responsible
@@ -16,7 +16,7 @@ require_relative '../domain/download'
 class DownloadCoordinator
   # Creates a new DownloadCoordinator
   #
-  # @param repository [DownloadRepository] Repository for persisting downloads
+  # @param repository [Repositories::DownloadRepository] Repository for persisting downloads
   def initialize(repository)
     @repository = repository
   end

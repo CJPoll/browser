@@ -1,13 +1,13 @@
 require 'minitest/autorun'
 require 'fileutils'
-require_relative '../../lib/adapters/download_repository'
+require_relative '../../lib/repositories/download_repository'
 require_relative '../../lib/domain/download'
 
 class DownloadRepositoryTest < Minitest::Test
   def setup
     @test_db_path = '/tmp/test_downloads.db'
     FileUtils.rm_f(@test_db_path)
-    @repository = DownloadRepository.new(db_path: @test_db_path)
+    @repository = Repositories::DownloadRepository.new(db_path: @test_db_path)
   end
 
   def teardown
