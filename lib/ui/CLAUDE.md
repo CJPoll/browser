@@ -42,6 +42,33 @@ Conventions:
 - The widget refreshes itself after emitting an intent. The Framework
   performs the call synchronously, so the next `get_*` already reflects it.
 
+## A list of lists takes section descriptors
+
+`SitePermissionsWindow` shows four differently-sourced lists. Rather than four
+`create_*_section` / `refresh_*_list` method pairs -- which is how it hard-coded
+four managers -- it takes an array of descriptors and renders whatever it is
+given:
+
+```ruby
+SitePermissionsWindow.new(
+  sections: [
+    { title:, description:, empty_text:,
+      get_permissions: -> { @site_permission_manager.popup_permissions },
+      on_remove: ->(permission) { ... },
+      row_label: ->(permission) { ... } }   # optional; defaults to the host
+  ],
+  parent_window: self
+)
+```
+
+Two things fall out. Adding a section is a Framework change only -- the widget
+does not grow a method. And a test builds a section from a plain array, so
+every rendering path is exercised without a manager in sight.
+
+The Framework method that builds the descriptors (`site_permission_sections`)
+is worth keeping separate from the one that opens the window: it is the only
+place that knows both the manager and the copy.
+
 ## Which controls appear is a domain decision
 
 Mapping state to available actions is business logic, not layout. It lives in
@@ -70,3 +97,20 @@ Test instead:
 Behaviour behind a button belongs to the Domain module that chooses the
 controls, the Manager that performs the action, and the handler that reaches
 the framework -- all three are testable without GTK.
+
+Where a button does have widget-level behaviour worth pinning -- "emit the
+intent, then redraw this section from its data source" -- make that a **public
+method** and let the signal handler be a one-line call to it:
+
+```ruby
+def remove_permission(section, permission)
+  section[:on_remove]&.call(permission)
+  refresh_section(section)
+end
+
+remove_button.signal_connect("clicked") { remove_permission(section, permission) }
+```
+
+The test calls `remove_permission` directly and asserts the row disappeared.
+Only the one-line `signal_connect` stays untested, which is as close to the
+GTK boundary as this environment lets us get.

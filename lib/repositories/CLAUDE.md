@@ -22,6 +22,47 @@ bucket rules; this file records the conventions this directory follows.
   to create the DB directory. It is easy to miss because GTK code elsewhere
   loads it transitively at runtime but not in unit tests.
 
+## Connection boilerplate is shared; schemas are not
+
+`SqliteConnection` provides `connect(db_path)` (mkdir, open, hash rows, UTF-8
+pragma) and `close`. Include it rather than repeating six lines in every
+class:
+
+```ruby
+class PopupExceptionRepository
+  include SqliteConnection
+
+  DB_PATH = File.join(Dir.home, '.local', 'share', 'toy-browser', 'popups.db')
+
+  def initialize(db_path: DB_PATH)
+    connect(db_path)
+    setup_database
+  end
+```
+
+What it deliberately does **not** do is take the table name. The four
+permission stores look alike today, but they are four tables with different
+keys and different semantics (media is keyed on `(host, type)`, the rest on
+`host` alone); a parameterised base class would make that difference invisible
+and the next divergence painful. Each repository declares its own schema and
+owns every SQL string touching it.
+
+## Naming for a host-keyed store
+
+The permission repositories settled on a small shared vocabulary. Reuse it:
+
+| Method | Returns |
+| --- | --- |
+| `exists?(key)` | Boolean; `false` for a nil key rather than raising |
+| `add(domain_object)` | the stored object **with its id**, or `nil` if the row already existed |
+| `remove(key)` | Boolean -- whether anything was deleted |
+| `all` | `Array<DomainObject>`, ordered for display |
+
+`add` returning `nil` rather than `false` on a duplicate is what lets a caller
+write `repository.add(...)` and get a Domain object back on success; the
+uniqueness constraint is caught as `SQLite3::ConstraintException` and
+translated here, not left to leak into a Manager.
+
 ## Testing
 
 Repositories are **never mocked** (ADR 001). Test against a real SQLite file:

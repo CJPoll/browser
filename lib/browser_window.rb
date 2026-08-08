@@ -30,10 +30,11 @@ require_relative 'ui/download_notification_bar'
 require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
+require_relative 'domain/media_permission_type'
 require_relative 'domain/oauth_popup'
 require_relative 'domain/url_classifier'
 require_relative 'managers/article_extractor_js'
-require_relative 'managers/certificate_exception_manager'
+require_relative 'managers/site_permission_manager'
 require_relative 'managers/autocomplete_manager'
 require_relative 'managers/download_coordinator'
 require_relative 'handlers/download_handler'
@@ -55,7 +56,7 @@ class BrowserWindow < Gtk::Window
     @history_manager = HistoryManager.new
     @queue_manager = QueueManager.new
     @download_coordinator = DownloadCoordinator.new
-    @popup_manager = PopupManager.new
+    @site_permission_manager = Managers::SitePermissionManager.new
     @settings_manager = SettingsManager.new(data_dir: @data_dir)
     @session_manager = SessionManager.new(data_dir: @data_dir)
 
@@ -85,13 +86,12 @@ class BrowserWindow < Gtk::Window
     # Track hosts with active notifications to avoid duplicates
     @popup_notification_hosts = Set.new
 
-    # === Media Permission Manager ===
-    @media_permission_manager = MediaPermissionManager.new
-    @media_permission_pending = {}  # Track pending permission requests by host
-
-    # === Certificate Exception Manager ===
-    @certificate_exception_manager = CertificateExceptionManager.new
-    @certificate_exception_pending = Set.new  # Track hosts with active certificate notifications
+    # === In-flight Permission Requests ===
+    # Site permissions themselves live in @site_permission_manager; these track
+    # which requests already have a bar on screen, so a repeat request from the
+    # same host does not stack a second one.
+    @media_permission_pending = {}  # Pending requests by "host:permission_type"
+    @certificate_exception_pending = Set.new  # Hosts with an active certificate bar
 
     # === Tab Management ===
     @tabs = []
@@ -720,7 +720,7 @@ class BrowserWindow < Gtk::Window
 
       if host
         # Check if we already have an exception for this host
-        if @certificate_exception_manager.allowed?(host)
+        if @site_permission_manager.certificate_trusted?(host)
           # Allow the certificate and reload
           @web_context.allow_tls_certificate_for_host(certificate, host)
           tab.webview.load_uri(failing_uri)
@@ -874,7 +874,7 @@ class BrowserWindow < Gtk::Window
 
       if destination_url
         # Check if destination host is whitelisted
-        if @popup_manager.allowed?(destination_url)
+        if @site_permission_manager.popups_allowed?(destination_url)
           # Check if this is an OAuth URL that needs a floating window
           if Domain::OauthPopup.popup?(destination_url)
             # Create popup window for OAuth
@@ -928,19 +928,13 @@ class BrowserWindow < Gtk::Window
       host = URI.parse(uri).host
       return false unless host
 
-      # Determine permission type
-      has_audio = request.is_for_audio_device?
-      has_video = request.is_for_video_device?
-      permission_type = if has_audio && has_video
-                          :audio_video
-                        elsif has_video
-                          :video
-                        else
-                          :audio
-                        end
+      permission_type = Domain::MediaPermissionType.for(
+        audio: request.is_for_audio_device?,
+        video: request.is_for_video_device?
+      )
 
       # Check if already whitelisted
-      if @media_permission_manager.allowed?(uri, permission_type)
+      if @site_permission_manager.media_allowed?(uri, permission_type)
         request.allow
         puts "Media permission auto-allowed for #{host} (#{permission_type})"
         return true
@@ -1642,9 +1636,52 @@ class BrowserWindow < Gtk::Window
   end
 
   def open_site_permissions
-    permissions_window = SitePermissionsWindow.new(@popup_manager, @media_permission_manager, @certificate_exception_manager, self)
+    permissions_window = SitePermissionsWindow.new(
+      sections: site_permission_sections,
+      parent_window: self
+    )
     permissions_window.set_application(self.application) if self.application
     permissions_window.show_all
+  end
+
+  # Describes the Site Permissions window: what each section lists and what
+  # removing a row from it means. The window renders these and emits the
+  # intents; only this method knows the manager.
+  #
+  # @return [Array<Hash>] Section descriptors in display order
+  def site_permission_sections
+    [
+      {
+        title: "Popup Permissions",
+        description: "Sites allowed to show popups:",
+        empty_text: "No sites have popup permissions",
+        get_permissions: -> { @site_permission_manager.popup_permissions },
+        on_remove: ->(permission) {
+          @site_permission_manager.revoke_popup_permission(permission.host)
+        }
+      },
+      {
+        title: "Media Permissions",
+        description: "Sites allowed to access camera/microphone:",
+        empty_text: "No sites have media permissions",
+        get_permissions: -> { @site_permission_manager.media_permissions },
+        row_label: ->(permission) {
+          "#{permission.host} - #{Domain::MediaPermissionType.describe(permission.permission_type)}"
+        },
+        on_remove: ->(permission) {
+          @site_permission_manager.revoke_media_permission(permission.host, permission.permission_type)
+        }
+      },
+      {
+        title: "Certificate Exceptions",
+        description: "Sites with trusted self-signed/invalid certificates:",
+        empty_text: "No certificate exceptions",
+        get_permissions: -> { @site_permission_manager.certificate_exceptions },
+        on_remove: ->(permission) {
+          @site_permission_manager.revoke_certificate_exception(permission.host)
+        }
+      }
+    ]
   end
 
   def open_file
@@ -1935,7 +1972,7 @@ class BrowserWindow < Gtk::Window
 
     notification_bar = PopupNotificationBar.new(
       on_allow: ->(allowed_host) {
-        @popup_manager.allow("https://#{allowed_host}")
+        @site_permission_manager.allow_popups("https://#{allowed_host}")
         @popup_notification_hosts.delete(allowed_host)
 
         # Automatically open the popup
@@ -1979,7 +2016,7 @@ class BrowserWindow < Gtk::Window
 
     notification_bar = MediaPermissionBar.new(
       on_allow: ->(allowed_host, perm_type) {
-        @media_permission_manager.allow("https://#{allowed_host}", perm_type)
+        @site_permission_manager.allow_media("https://#{allowed_host}", perm_type)
         pending_request = @media_permission_pending.delete("#{allowed_host}:#{perm_type}")
         pending_request&.allow
         puts "Media permission allowed for #{allowed_host} (#{perm_type})"
@@ -2037,7 +2074,7 @@ class BrowserWindow < Gtk::Window
 
     notification_bar = CertificateExceptionBar.new(
       on_allow: ->(allowed_host, uri) {
-        @certificate_exception_manager.allow(allowed_host)
+        @site_permission_manager.trust_certificate(allowed_host)
         @certificate_exception_pending.delete(allowed_host)
 
         # Allow the certificate in WebKit context and reload

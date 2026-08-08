@@ -114,13 +114,21 @@ Current classes that already conform:
 | `lib/domain/tag_name.rb` | Domain (conforms) |
 | `lib/domain/download_badge.rb` | Domain (conforms) |
 | `lib/domain/download_controls.rb` | Domain (conforms) |
+| `lib/domain/host_permission.rb` | Domain (conforms) |
+| `lib/domain/media_permission_type.rb` | Domain (conforms) |
 | `lib/repositories/download_repository.rb` | Repositories |
+| `lib/repositories/popup_exception_repository.rb` | Repositories |
+| `lib/repositories/media_permission_repository.rb` | Repositories |
+| `lib/repositories/notification_permission_repository.rb` | Repositories |
+| `lib/repositories/certificate_exception_repository.rb` | Repositories |
 | `lib/adapters/fzf_adapter.rb` | Adapters |
 | `lib/adapters/file_system.rb` | Adapters |
 | `lib/managers/autocomplete_manager.rb` | Managers |
 | `lib/managers/download_coordinator.rb` | Managers |
+| `lib/managers/site_permission_manager.rb` | Managers |
 | `lib/handlers/download_handler.rb` | Framework (WebKit signals -> Manager) |
 | `lib/ui/download_list_view.rb` | UI (data in, intent callbacks out) |
+| `lib/ui/site_permissions_window.rb` | UI (data in, intent callbacks out) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are
@@ -128,10 +136,7 @@ different tables with different semantics:
 
 | Current file | Target |
 |--------------|--------|
-| `lib/managers/popup_manager.rb` | `Repositories::PopupExceptionRepository` (`popup_exceptions`) |
-| `lib/managers/media_permission_manager.rb` | `Repositories::MediaPermissionRepository` (`media_permissions`) |
-| `lib/managers/notification_permission_manager.rb` | `Repositories::NotificationPermissionRepository` (`notification_permissions`) |
-| `lib/managers/certificate_exception_manager.rb` | `Repositories::CertificateExceptionRepository` (`certificate_exceptions`) |
+| The four permission pseudo-managers | Deleted -- superseded by the four repositories above plus `Managers::SitePermissionManager`, which resolves URLs to hosts via `Domain::UrlHost` and owns the clock for grants |
 | `history_manager.rb` (root) | `Repositories::HistoryRepository` (`sites`, `pages`, `visits`); its authority logic already lives in `Domain::UrlHost` |
 | `queue_manager.rb` (root) | `Repositories::QueueRepository` (`queue_entries`) + `Repositories::TagRepository` (`tags`, `queue_entry_tag_assignments`), sharing `queue.db`; its URL matching and tag-name rules already live in `Domain::UrlMatcher` and `Domain::TagName` |
 | `download_manager.rb` (root) | Deleted -- superseded by `Repositories::DownloadRepository` + `DownloadCoordinator`, wired in through `DownloadHandler` |
@@ -211,9 +216,11 @@ class BrowserWindow
 end
 
 # BAD: a "Manager" that is really a Repository
-class Managers::PopupManager
+# (the shape the four permission pseudo-managers had before they were split
+# into repositories + Managers::SitePermissionManager)
+class Managers::SomePermissionManager
   def allow(url)
-    @db.execute("INSERT INTO popup_exceptions ...")  # SQL outside lib/repositories/
+    @db.execute("INSERT INTO some_permissions ...")  # SQL outside lib/repositories/
   end
 end
 

@@ -56,6 +56,32 @@ def initialize(repository = Repositories::DownloadRepository.new,
 repository. The dependency is still injected -- it just has a production
 default in the one place that is allowed to know it.
 
+## Name the method after what the caller has
+
+`Managers::SitePermissionManager` is the seam between "a site is asking for
+something" (the caller holds a page URL) and "the user is managing a stored
+record" (the caller holds a hostname). Rather than accept either everywhere
+and guess, each method declares which it takes:
+
+- `popups_allowed?(url)`, `allow_media(url, type)` -- **URL**; the manager
+  resolves it with `Domain::UrlHost.host`.
+- `revoke_popup_permission(host)`, `revoke_media_permission(host, type)` --
+  **host**; by then there is no URL in play.
+- `certificate_trusted?(host)`, `trust_certificate(host)` -- **host**
+  throughout, because WebKit reports the failing host directly.
+
+This killed a wart: the old permissions window had to fabricate
+`"https://#{host}"` so a URL-only API could revoke a record it had listed by
+host. Where a caller genuinely has either form -- WebKit's
+`query-permission-state` supplies a security origin, not a page URL --
+`Domain::UrlHost.host_or_bare_name` handles both, and the docstring says which
+callers need it.
+
+A manager is also the right place to reject input Domain considers invalid
+before it reaches a repository: `allow_media` checks
+`Domain::MediaPermissionType.valid?` so an unknown type cannot land in the
+table as an unrevokable row.
+
 ## Managers own the clock
 
 Domain never reads the clock (see `lib/domain/CLAUDE.md`), so the manager that
