@@ -28,13 +28,16 @@ require_relative 'ui/reader_view'
 require_relative 'ui/download_list_view'
 require_relative 'ui/download_notification_bar'
 require_relative 'ui/certificate_exception_bar'
+require_relative 'ui/notification_permission_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
 require_relative 'domain/media_permission_type'
-require_relative 'domain/oauth_popup'
 require_relative 'domain/url_classifier'
 require_relative 'domain/article_extractor_js'
 require_relative 'managers/site_permission_manager'
+require_relative 'managers/popup_manager'
+require_relative 'managers/permission_request_manager'
+require_relative 'managers/web_notification_dispatcher'
 require_relative 'managers/history_manager'
 require_relative 'managers/autocomplete_manager'
 require_relative 'managers/download_coordinator'
@@ -66,6 +69,11 @@ class BrowserWindow < Gtk::Window
     @queue_navigation_manager = Managers::QueueNavigationManager.new(@queue_manager)
     @download_coordinator = DownloadCoordinator.new
     @site_permission_manager = Managers::SitePermissionManager.new
+    @popup_manager = Managers::PopupManager.new(site_permissions: @site_permission_manager)
+    @permission_request_manager = Managers::PermissionRequestManager.new(
+      site_permissions: @site_permission_manager
+    )
+    @web_notification_dispatcher = Managers::WebNotificationDispatcher.new
     @settings_manager = Managers::SettingsManager.new
     @session_manager = Managers::SessionManager.new
     @external_opener = Managers::ExternalOpener.new
@@ -99,6 +107,7 @@ class BrowserWindow < Gtk::Window
     # same host does not stack a second one.
     @media_permission_pending = {}  # Pending requests by "host:permission_type"
     @certificate_exception_pending = Set.new  # Hosts with an active certificate bar
+    @notification_permission_pending = Set.new  # Hosts with an active notification bar
 
     # === Tab Management ===
     @tabs = []
@@ -734,20 +743,16 @@ class BrowserWindow < Gtk::Window
     end
 
     # Handle TLS certificate errors (self-signed certs, etc.)
-    tab.webview.signal_connect("load-failed-with-tls-errors") do |_webview, failing_uri, certificate, errors|
-      uri = URI.parse(failing_uri) rescue nil
-      host = uri&.host
+    tab.webview.signal_connect("load-failed-with-tls-errors") do |_webview, failing_uri, certificate, _errors|
+      decision = @permission_request_manager.certificate_request(failing_uri)
 
-      if host
-        # Check if we already have an exception for this host
-        if @site_permission_manager.certificate_trusted?(host)
-          # Allow the certificate and reload
-          @web_context.allow_tls_certificate_for_host(certificate, host)
-          tab.webview.load_uri(failing_uri)
-        else
-          # Show the exception bar
-          show_certificate_exception_bar(host, failing_uri, certificate, tab)
-        end
+      case decision.action
+      when :allow
+        # Already trusted: accept the certificate and load the page
+        @web_context.allow_tls_certificate_for_host(certificate, decision.host)
+        tab.webview.load_uri(failing_uri)
+      when :prompt
+        show_certificate_exception_bar(decision.host, failing_uri, certificate, tab)
       end
 
       true  # We handled it, don't emit load-failed
@@ -887,87 +892,107 @@ class BrowserWindow < Gtk::Window
     end
 
     # Handle popup requests (window.open, target="_blank", etc.)
-    tab.webview.signal_connect("create") do |webview, navigation_action|
-      # Get the destination URL from the navigation action
-      request = navigation_action.request
-      destination_url = request&.uri
+    tab.webview.signal_connect("create") do |_webview, navigation_action|
+      destination_url = navigation_action.request&.uri
 
-      if destination_url
-        # Check if destination host is whitelisted
-        if @site_permission_manager.popups_allowed?(destination_url)
-          # Check if this is an OAuth URL that needs a floating window
-          if Domain::OauthPopup.popup?(destination_url)
-            # Create popup window for OAuth
-            popup = PopupWindow.new(tab.webview, self)
-            puts "OAuth popup opened: #{destination_url}"
-            popup.webview
-          else
-            # Open in new tab for regular popups
-            create_new_tab(destination_url, switch_to: true)
-            puts "Popup opened in new tab: #{destination_url}"
-            nil  # Return nil since we handled it ourselves
-          end
-        else
-          # Block popup and show notification
-          begin
-            uri = URI.parse(destination_url)
-            host = uri.host
-            if host
-              show_popup_blocked_notification(host, destination_url, tab.webview)
-              puts "Popup blocked from: #{host}"
-            end
-          rescue URI::InvalidURIError
-            # Invalid URL, silently block
-          end
-
-          nil  # Return nil to block the popup
-        end
-      else
-        nil  # No URL, block
-      end
+      open_requested_popup(@popup_manager.request(destination_url), tab.webview)
     end
 
-    # Handle media permission requests (camera/microphone)
+    # Handle media permission requests (camera/microphone) and notification permissions
     tab.webview.signal_connect("permission-request") do |webview, request|
-      handle_media_permission_request(webview, request)
+      handle_permission_request(webview, request)
+    end
+
+    # Handle web notifications - send to dunst via notify-send
+    tab.webview.signal_connect("show-notification") do |webview, notification|
+      handle_web_notification(webview, notification)
+    end
+
+    # Handle permission state queries (for Notification.permission checks)
+    tab.webview.signal_connect("query-permission-state") do |webview, query|
+      handle_permission_state_query(webview, query)
+    end
+
+    # Handle file chooser requests with image preview
+    tab.webview.signal_connect("run-file-chooser") do |webview, request|
+      handle_file_chooser_request(webview, request)
     end
   end
 
-  # Handles media device permission requests
+  # Opens (or blocks) a popup the page asked for
+  #
+  # @param decision [Domain::PopupDecision] What Managers::PopupManager decided
+  # @param related_view [WebKit2Gtk::WebView] WebView the popup belongs to
+  # @return [WebKit2Gtk::WebView, nil] The webview WebKit should load the
+  #   popup into, or nil when the popup is not being opened here
+  def open_requested_popup(decision, related_view)
+    case decision.action
+    when :oauth_window
+      popup = PopupWindow.new(related_view, self)
+      puts "OAuth popup opened: #{decision.url}"
+      popup.webview
+    when :new_tab
+      create_new_tab(decision.url, switch_to: true)
+      puts "Popup opened in new tab: #{decision.url}"
+      nil  # We handled it ourselves
+    when :prompt
+      show_popup_blocked_notification(decision.host, decision.url, related_view)
+      puts "Popup blocked from: #{decision.host}"
+      nil  # Block the popup
+    end
+  end
+
+  # Handles permission requests (media and notification)
   #
   # @param webview [WebKit2Gtk::WebView] The webview making the request
   # @param request [WebKit2Gtk::PermissionRequest] The permission request
   # @return [Boolean] True to stop signal propagation
-  def handle_media_permission_request(webview, request)
+  def handle_permission_request(webview, request)
+    if request.is_a?(WebKit2Gtk::NotificationPermissionRequest)
+      return handle_notification_permission_request(webview, request)
+    end
+
     return false unless request.is_a?(WebKit2Gtk::UserMediaPermissionRequest)
 
-    uri = webview.uri
-    return false unless uri
+    permission_type = Domain::MediaPermissionType.for(
+      audio: request.is_for_audio_device?,
+      video: request.is_for_video_device?
+    )
+    decision = @permission_request_manager.media_request(webview.uri, permission_type)
 
-    begin
-      host = URI.parse(uri).host
-      return false unless host
-
-      permission_type = Domain::MediaPermissionType.for(
-        audio: request.is_for_audio_device?,
-        video: request.is_for_video_device?
-      )
-
-      # Check if already whitelisted
-      if @site_permission_manager.media_allowed?(uri, permission_type)
-        request.allow
-        puts "Media permission auto-allowed for #{host} (#{permission_type})"
-        return true
-      end
-
-      # Show permission bar
-      show_media_permission_bar(host, permission_type, request)
+    case decision.action
+    when :allow
+      request.allow
+      puts "Media permission auto-allowed for #{decision.host} (#{permission_type})"
       true
-    rescue URI::InvalidURIError
+    when :prompt
+      show_media_permission_bar(decision.host, permission_type, request)
+      true
+    else
       false
     end
   end
 
+  # Handles web notification permission requests
+  #
+  # @param webview [WebKit2Gtk::WebView] The webview making the request
+  # @param request [WebKit2Gtk::NotificationPermissionRequest] The permission request
+  # @return [Boolean] True to stop signal propagation
+  def handle_notification_permission_request(webview, request)
+    decision = @permission_request_manager.notification_request(webview.uri)
+
+    case decision.action
+    when :allow
+      request.allow
+      puts "Notification permission auto-allowed for #{decision.host}"
+      true
+    when :prompt
+      show_notification_permission_bar(decision.host, request)
+      true
+    else
+      false
+    end
+  end
 
   def on_uri_changed
     return unless current_tab
@@ -1651,6 +1676,15 @@ class BrowserWindow < Gtk::Window
         }
       },
       {
+        title: "Notification Permissions",
+        description: "Sites allowed to send notifications:",
+        empty_text: "No sites have notification permissions",
+        get_permissions: -> { @site_permission_manager.notification_permissions },
+        on_remove: ->(permission) {
+          @site_permission_manager.revoke_notification_permission(permission.host)
+        }
+      },
+      {
         title: "Certificate Exceptions",
         description: "Sites with trusted self-signed/invalid certificates:",
         empty_text: "No certificate exceptions",
@@ -1862,7 +1896,7 @@ class BrowserWindow < Gtk::Window
   private
 
   # Shows context menu for queue entry (right-click menu)
-  # @param entry [Hash] Queue entry with 'id', 'url', 'title'
+  # @param entry [Domain::QueueEntry] Queue entry the user right-clicked
   # @param event [Gdk::EventButton] Button press event for popup positioning
   def show_queue_entry_context_menu(entry, event)
     # Copy entry data to avoid reference invalidation after menu destruction
@@ -1950,18 +1984,17 @@ class BrowserWindow < Gtk::Window
 
     notification_bar = PopupNotificationBar.new(
       on_allow: ->(allowed_host) {
-        @site_permission_manager.allow_popups("https://#{allowed_host}")
+        decision = @popup_manager.allow_and_route(destination_url)
         @popup_notification_hosts.delete(allowed_host)
 
-        # Automatically open the popup
-        if Domain::OauthPopup.popup?(destination_url)
-          # OAuth needs a floating window
+        # Open the popup that was blocked, where it belongs
+        case decision.action
+        when :oauth_window
           popup = PopupWindow.new(related_view, self)
-          popup.webview.load_uri(destination_url)
+          popup.webview.load_uri(decision.url)
           popup.show_all
-        else
-          # Regular popups open in a new tab
-          create_new_tab(destination_url, switch_to: true)
+        when :new_tab
+          create_new_tab(decision.url, switch_to: true)
         end
 
         puts "Allowed popups for: #{allowed_host}"
@@ -2011,6 +2044,184 @@ class BrowserWindow < Gtk::Window
     @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
     @content_vbox.reorder_child(notification_bar.widget, 0)
     notification_bar.widget.show_all
+  end
+
+  # Shows a web notification permission request bar
+  # Creates the bar dynamically and destroys it when dismissed
+  # Only one notification per host is shown
+  #
+  # @param host [String] Host requesting notification permission
+  # @param request [WebKit2Gtk::NotificationPermissionRequest] The permission request
+  def show_notification_permission_bar(host, request)
+    # Don't create duplicate notifications for the same host
+    return if @notification_permission_pending.include?(host)
+    @notification_permission_pending.add(host)
+
+    notification_bar = NotificationPermissionBar.new(
+      on_allow: ->(allowed_host) {
+        @site_permission_manager.allow_notifications("https://#{allowed_host}")
+        @notification_permission_pending.delete(allowed_host)
+        request.allow
+        puts "Notification permission allowed for #{allowed_host}"
+      },
+      on_deny: -> {
+        @notification_permission_pending.delete(host)
+        request.deny
+        puts "Notification permission denied for #{host}"
+      }
+    )
+    notification_bar.set_host(host)
+
+    # Add to top of content area
+    @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(notification_bar.widget, 0)
+    notification_bar.widget.show_all
+  end
+
+  # Handles a web notification by sending it to dunst via notify-send
+  #
+  # @param webview [WebKit2Gtk::WebView] The webview that triggered the notification
+  # @param notification [WebKit2Gtk::Notification] The notification to display
+  # @return [Boolean] True to indicate the notification was handled
+  def handle_web_notification(webview, notification)
+    shown = @web_notification_dispatcher.dispatch(
+      title: notification.title,
+      body: notification.body,
+      page_url: webview.uri
+    )
+
+    puts "Web notification from #{shown.host}: #{shown.title}"
+
+    # Return true to indicate we handled the notification
+    # This prevents WebKit from trying to show its own notification
+    true
+  end
+
+  # Handles permission state queries from websites
+  # Called when a site checks Notification.permission or similar
+  #
+  # @param webview [WebKit2Gtk::WebView] The webview making the query
+  # @param query [WebKit2Gtk::PermissionStateQuery] The permission query
+  # @return [Boolean] True to indicate we handled the query
+  def handle_permission_state_query(_webview, query)
+    permission_name = query.name
+    origin = query.security_origin
+
+    case @permission_request_manager.permission_state(permission_name, origin)
+    when :granted
+      query.finish(WebKit2Gtk::PermissionState::GRANTED)
+      puts "Permission query for #{permission_name} from #{origin}: GRANTED"
+      true
+    when :prompt
+      # PROMPT indicates the site has not been asked yet
+      query.finish(WebKit2Gtk::PermissionState::PROMPT)
+      puts "Permission query for #{permission_name} from #{origin}: PROMPT"
+      true
+    else
+      false  # Not a permission we track; let WebKit handle it
+    end
+  end
+
+  # Handles file chooser requests from <input type="file"> elements
+  # Creates a custom file dialog with image preview support
+  #
+  # @param webview [WebKit2Gtk::WebView] The webview making the request
+  # @param request [WebKit2Gtk::FileChooserRequest] The file chooser request
+  # @return [Boolean] True to indicate we handled the request
+  def handle_file_chooser_request(webview, request)
+    # Determine dialog action based on whether multiple selection is allowed
+    action = :open
+
+    # Create file chooser dialog
+    dialog = Gtk::FileChooserDialog.new(
+      title: "Select File",
+      parent: self,
+      action: action,
+      buttons: [
+        ["Cancel", :cancel],
+        ["Open", :accept]
+      ]
+    )
+
+    # Allow multiple selection if the request supports it
+    dialog.select_multiple = request.select_multiple?
+
+    # Apply the MIME type filter from the request
+    if request.mime_types_filter
+      dialog.add_filter(request.mime_types_filter)
+    end
+
+    # Add an "All Images" filter with explicit extensions (helps with GIFs)
+    mime_types = request.mime_types || []
+    if mime_types.any? { |m| m.start_with?("image/") }
+      images_filter = Gtk::FileFilter.new
+      images_filter.name = "All Images"
+      images_filter.add_mime_type("image/*")
+      # Explicitly add common image extensions for better compatibility
+      %w[gif png jpg jpeg webp bmp tiff svg ico].each do |ext|
+        images_filter.add_pattern("*.#{ext}")
+        images_filter.add_pattern("*.#{ext.upcase}")
+      end
+      dialog.add_filter(images_filter)
+    end
+
+    # Always add an "All Files" option
+    all_filter = Gtk::FileFilter.new
+    all_filter.name = "All Files"
+    all_filter.add_pattern("*")
+    dialog.add_filter(all_filter)
+
+    # Create preview widget for images
+    preview_image = Gtk::Image.new
+    preview_image.set_size_request(200, 200)
+    dialog.preview_widget = preview_image
+    dialog.use_preview_label = false
+
+    # Connect to update-preview signal for image preview
+    dialog.signal_connect("update-preview") do
+      preview_filename = dialog.preview_filename
+      have_preview = false
+
+      if preview_filename && File.exist?(preview_filename)
+        begin
+          # Try to load as image, scaled to 200x200
+          pixbuf = GdkPixbuf::Pixbuf.new(file: preview_filename, width: 200, height: 200)
+          if pixbuf
+            preview_image.pixbuf = pixbuf
+            have_preview = true
+            puts "Preview loaded: #{preview_filename} (#{pixbuf.width}x#{pixbuf.height})"
+          end
+        rescue => e
+          # Not an image or failed to load - that's fine
+          puts "Preview failed for #{preview_filename}: #{e.class} - #{e.message}"
+          preview_image.clear
+        end
+      else
+        preview_image.clear
+      end
+
+      dialog.preview_widget_active = have_preview
+    end
+
+    # Run the dialog
+    response = dialog.run
+
+    if response == :accept
+      # Get selected files and pass to WebKit
+      filenames = dialog.filenames
+      if filenames && !filenames.empty?
+        request.select_files(filenames)
+      else
+        request.cancel
+      end
+    else
+      request.cancel
+    end
+
+    dialog.destroy
+
+    # Return true to indicate we handled the request
+    true
   end
 
   # Shows a download completion notification bar

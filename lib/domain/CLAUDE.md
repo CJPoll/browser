@@ -47,6 +47,9 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::AutoTagger` | which tags do the rules give this entry? |
 | `Domain::MarkdownDocument` | what does this markdown document say about itself? |
 | `Domain::MarkdownRenderer` | what page does this markdown document become? |
+| `Domain::PopupDecision` | where does this popup belong -- window, tab, or nowhere? |
+| `Domain::PermissionDecision` | may this site have what it is asking for? |
+| `Domain::WebNotification` | what does this page's notification say, and who sent it? |
 
 ## Presentation rules are Domain too
 
@@ -173,6 +176,36 @@ when :home_path then "file://#{File.expand_path(text)}"
 ```
 
 This keeps the branching logic testable without stubbing `ENV`.
+
+## When the caller has to act, return a decision *object*
+
+A symbol is enough when the caller already holds everything it needs
+(`:home_path` above). When acting on the answer also needs *data derived while
+deciding*, return a value object carrying both, so the Framework never
+re-derives anything:
+
+```ruby
+decision = Domain::PopupDecision.for(url: destination_url, allowed: allowed?)
+# => action: :prompt, url: 'https://ads.example.com/x', host: 'ads.example.com'
+```
+
+`BrowserWindow` then reads as a `case` over `decision.action` where every
+branch is a widget operation. The host it names in the bar was worked out by
+Domain, not parsed again at the call site -- which is how the old block came
+to have `URI.parse` inside a WebKit signal handler.
+
+Two conventions make these objects worth their weight:
+
+- **The action vocabulary is small and shared.** `allow` / `prompt` / `ignore`
+  covers the camera, notifications *and* certificate exceptions, so one
+  `PermissionDecision` serves three flows and the Framework's three `case`
+  statements have the same shape. Resist a fourth action until a caller
+  genuinely needs to do a fourth thing.
+- **Unusable input is a decision, not an exception.** A popup with no host
+  gets `:block` rather than `:prompt` because a bar would have nothing to
+  name; a permission request from `about:blank` gets `:ignore` because there
+  is nothing to record a grant against. The distinction that used to be an
+  `if host` buried in the Framework becomes a named action with a test.
 
 ## Preserved warts are pinned by tests
 

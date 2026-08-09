@@ -246,6 +246,43 @@ exhaustive tests without a database. What is left here is the fetch. When a
 manager method grows an `if`, ask which Domain module the condition belongs
 to.
 
+## Split "what is stored" from "what to do when it is asked for"
+
+`Managers::SitePermissionManager` owns the stored permissions;
+`Managers::PermissionRequestManager` and `Managers::PopupManager` own what
+happens when a site asks for one. The second pair drives the first (see "a
+manager may drive another manager") and each method is the same three lines:
+
+```ruby
+def notification_request(page_url)
+  Domain::PermissionDecision.for(
+    url: page_url,
+    granted: @site_permissions.notifications_allowed?(page_url)
+  )
+end
+```
+
+Why the split is worth two extra files: the storage manager is called by the
+permissions *window* (list, revoke) and the request managers are called by
+WebKit *signals*. They change for different reasons, and the request side has
+policy the storage side should never grow -- OAuth routing, which permission
+names this browser answers a state query for, what to do when a URL has no
+host.
+
+The rule for what stays in the Framework: **the manager decides, the Framework
+applies**. Opening a window, calling `request.allow`, or handing WebKit a
+`PermissionState` all need objects only `BrowserWindow` holds, so the manager
+returns a decision and never sees a widget. That is also what makes the policy
+testable -- `test/managers/permission_request_manager_test.rb` covers every
+branch with no GTK in the process.
+
+Where a manager answers a question WebKit asks about *itself*, keep the symbol
+vocabulary WebKit uses (`:granted` / `:prompt` / `:unhandled`) rather than the
+decision object -- the Framework's job there is a one-to-one translation into
+`WebKit2Gtk::PermissionState`, and `:unhandled` is genuinely different from
+"no". Note the query supplies a **security origin**, not a page URL, which is
+why that path goes through `Domain::UrlHost.host_or_bare_name`.
+
 ## Constructor: production default, plus a seam for mocks
 
 Managers default their own collaborators so Framework never names a

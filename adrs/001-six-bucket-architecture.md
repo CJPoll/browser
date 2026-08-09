@@ -177,6 +177,13 @@ Current classes that already conform:
 | `lib/domain/markdown_view.rb` | Domain (the page to display, and the URI it stands for) |
 | `lib/managers/markdown_manager.rb` | Managers (render pipeline; view state keyed by an opaque handle) |
 | `lib/handlers/markdown_handler.rb` | Framework (intercepts `decide-policy`, loads what the manager returns) |
+| `lib/domain/popup_decision.rb` | Domain (where a popup belongs, or whether to ask) |
+| `lib/domain/permission_decision.rb` | Domain (allow, ask, or stay out of it) |
+| `lib/domain/web_notification.rb` | Domain (what a page's notification says and who sent it) |
+| `lib/managers/popup_manager.rb` | Managers (popup permission + routing) |
+| `lib/managers/permission_request_manager.rb` | Managers (policy applied when a site asks for a permission) |
+| `lib/managers/web_notification_dispatcher.rb` | Managers (hands a notification to the desktop) |
+| `lib/ui/notification_permission_bar.rb` | UI (data in, intent callbacks out) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are

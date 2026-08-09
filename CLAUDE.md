@@ -120,6 +120,7 @@ The browser can be set as the system's default browser:
 - **History DB**: `~/.local/share/toy-browser/history.db`
 - **Queue DB**: `~/.local/share/toy-browser/queue.db`
 - **Cookies**: `~/.local/share/toy-browser/cookies.sqlite`
+- **Notification Permissions DB**: `~/.local/share/toy-browser/notification_permissions.db`
 - **Cache**: `~/.cache/toy-browser/`
 
 All directories are created automatically on first run.
@@ -202,6 +203,43 @@ If a web app fails with "undefined is not a function" errors in the console:
 - `experimental_features` returns a `FeatureList`, not an Array
 - Use `get(index)` to access features, not array indexing
 - Feature identifiers are case-sensitive (e.g., "FileSystemAccess" not "FileSystemAccessAPI")
+
+### Web Notifications
+
+The browser supports web notifications via the standard Notification API, delivering them through the system notification daemon (dunst).
+
+**How it works:**
+1. Website requests notification permission via `Notification.requestPermission()`
+2. Browser shows a purple permission bar asking user to allow/block
+3. User's choice is persisted in SQLite database
+4. When a notification is triggered, browser sends it via `notify-send` to dunst
+
+**Permission Flow:**
+- **First request**: Shows permission bar with "Allow" and "Block" buttons
+- **Subsequent visits**: Permission auto-granted if previously allowed
+- **Management**: View/revoke permissions via Site Permissions window (Ctrl+Shift+S)
+
+**Implementation:**
+- `Repositories::NotificationPermissionRepository` - SQLite-backed permission storage, behind `Managers::SitePermissionManager`
+- `Managers::PermissionRequestManager` - decides allow/prompt/ignore for a request, and answers `Notification.permission` state queries
+- `NotificationPermissionBar` - UI for permission requests (purple theme)
+- `Managers::WebNotificationDispatcher` - hands the notification to `Adapters::SystemNotifier` (`notify-send`) on the `show-notification` signal
+- Experimental `Notifications` feature enabled in WebKit
+
+**Data Storage:**
+- Permissions stored in `~/.local/share/toy-browser/notification_permissions.db`
+
+**Dunst Integration:**
+- Uses `notify-send --app-name=<hostname>` for identification
+- Falls back to "web-browser" icon
+- Works with any notification daemon supporting freedesktop.org specs
+
+**Limitation - Push API:**
+- The browser supports the **Notification API** (showing notifications when browser is open)
+- **Push API** (server-sent notifications when browser is closed) has limited support in WebKitGTK
+- Sites using `PushManager.subscribe()` may show errors like "An unknown error occurred while enabling push notifications"
+- This is a WebKitGTK limitation, not a browser limitation
+- Push API requires platform-specific push service infrastructure that WebKitGTK on Linux doesn't fully provide
 
 ### Markdown Rendering
 
@@ -295,6 +333,21 @@ The queue is a FIFO (first-in-first-out) list for managing URLs you want to read
 - Queue entries and tags cross bucket boundaries as `Domain::QueueEntry` / `Domain::Tag`, never as row hashes
 - Maximum capacity: thousands of entries (SQLite-backed)
 - UTF-8 encoding enforced via SQLite `PRAGMA encoding = 'UTF-8'`
+
+### File Chooser with Image Preview
+
+When websites use `<input type="file">`, the browser shows a custom file chooser dialog with image preview support.
+
+**Features:**
+- **Image preview**: Shows a 200x200 preview of image files when selected
+- **MIME type filtering**: Respects the `accept` attribute from the HTML input
+- **Multiple selection**: Supports `multiple` attribute for selecting multiple files
+
+**Implementation:**
+- Intercepts WebKit's `run-file-chooser` signal
+- Creates a custom `Gtk::FileChooserDialog` with preview widget
+- Uses `update-preview` signal to load image thumbnails via GdkPixbuf
+- Gracefully handles non-image files (preview disabled)
 
 ### Keyboard Shortcuts
 
