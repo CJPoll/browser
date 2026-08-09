@@ -83,10 +83,9 @@ class FaviconManager
         end
       rescue => e
         if e.message.include?("Unknown favicon")
-          puts "DEBUG: No favicon for #{page_uri}, trying root domain..."
           try_root_domain_favicon(page_uri)
         else
-          puts "DEBUG: Error getting favicon for #{page_uri}: #{e.message}"
+          warn "Error getting favicon for #{page_uri}: #{e.message}"
         end
       end
     end
@@ -119,17 +118,13 @@ class FaviconManager
         begin
           surface = @favicon_db.get_favicon_finish(result)
 
-          if surface
-            save_favicon_data(page_uri, surface)
-          else
-            puts "DEBUG: No root domain favicon available for #{page_uri}"
-          end
+          save_favicon_data(page_uri, surface) if surface
         rescue => e
-          puts "DEBUG: Error getting root domain favicon: #{e.message}"
+          warn "Error getting root domain favicon: #{e.message}"
         end
       end
     rescue URI::InvalidURIError => e
-      puts "DEBUG: Invalid URI for root domain lookup: #{e.message}"
+      warn "Invalid URI for root domain lookup: #{e.message}"
     end
   end
 
@@ -139,31 +134,21 @@ class FaviconManager
   # @param surface [Cairo::Surface] Cairo surface containing favicon
   # @return [void]
   def save_favicon_data(page_uri, surface)
+    # A conversion failure has already reported its reason from `surface_to_png`.
     favicon_data = surface_to_png(surface)
+    return unless favicon_data
 
-    if favicon_data
-      @history_manager.update_favicon(page_uri, favicon_data)
+    @history_manager.update_favicon(page_uri, favicon_data)
 
-      # Update tabs with favicon data (access tabs via callback)
-      # Gap 28 RESOLUTION: Tabs accessor timing is INTENTIONAL
-      # Tabs are accessed dynamically when timer fires (300ms after last favicon event)
-      # This matches current behavior - tabs accessed at save time, not at favicon event time
-      # If tabs have changed in the meantime (closed, navigated), that's okay - loop skips them
-      tabs = @tabs_accessor.call
-      tabs.each do |tab|
-        if tab.uri == page_uri
-          tab.favicon_data = favicon_data
-        end
-      end
-
-      # Refresh tabs to show the new favicon
-      # Gap 25 RESOLUTION: Current implementation calls refresh_tabs DIRECTLY (line 978)
-      # NOT via callback. Callback pattern would be enhancement, not extraction.
-      # DECISION: Match current implementation - call refresh_tabs via callback parameter
-      @on_favicon_updated.call if @on_favicon_updated
-    else
-      puts "DEBUG: Failed to convert favicon to PNG for #{page_uri}"
+    # Update tabs with favicon data (access tabs via callback).
+    # Tabs are read when the debounce timer fires, not when the favicon event
+    # arrived; a tab that has since closed or navigated is simply skipped.
+    @tabs_accessor.call.each do |tab|
+      tab.favicon_data = favicon_data if tab.uri == page_uri
     end
+
+    # Refresh tabs to show the new favicon
+    @on_favicon_updated&.call
   end
 
   # Converts Cairo surface to PNG binary data

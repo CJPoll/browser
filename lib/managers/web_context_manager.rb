@@ -20,13 +20,6 @@ class WebContextManager
     # Get the default web context
     context = WebKit2Gtk::WebContext.default
 
-    # Check what directories the data manager is using
-    data_manager = context.website_data_manager
-    puts "DEBUG: Base data directory: #{data_manager.base_data_directory}"
-    puts "DEBUG: Base cache directory: #{data_manager.base_cache_directory}"
-    puts "DEBUG: Local storage directory: #{data_manager.local_storage_directory}"
-    puts "DEBUG: IndexedDB directory: #{data_manager.indexeddb_directory}"
-
     # Set up persistent cookie storage
     cookies_file = File.join(data_dir, 'cookies.sqlite')
     cookie_manager = context.cookie_manager

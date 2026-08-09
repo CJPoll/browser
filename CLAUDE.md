@@ -27,11 +27,25 @@ The browser will start with a 1200x768 window. If no URL provided, it restores t
 Framework, UI Components, Repositories, Adapters, Domain, Managers -- with
 constrained call directions between them. See
 `adrs/001-six-bucket-architecture.md` for the definition, the allowed-calls
-matrix, and the target bucket assignments for existing code. Highlights: UI
+matrix, and the bucket assignment of every file. Highlights: UI
 must not call Managers/Repositories/Adapters (bubble events up via
 callbacks); Framework must not call Repositories/Adapters (go through a
 Manager); all SQL lives in `lib/repositories/`; Domain is pure (no IO, no
 clock reads).
+
+**Directory is bucket** -- one directory per bucket, no exceptions:
+
+| Directory | Bucket | Holds |
+|-----------|--------|-------|
+| `simple_browser.rb`, `lib/browser_application.rb`, `lib/browser_window.rb`, `lib/tab.rb`, `lib/handlers/` | Framework | GTK/WebKit signal wiring; calls Managers only |
+| `lib/ui/` | UI Components | Widgets: data in, intent callbacks out |
+| `lib/managers/` | Managers | Use cases; own the clock; wire Repositories/Adapters to Domain |
+| `lib/repositories/` | Repositories | SQLite tables; all SQL; Domain objects in and out |
+| `lib/adapters/` | Adapters | Non-database side effects: processes, HTTP, JSON file stores, IPC |
+| `lib/domain/` | Domain | Pure values and rules; no IO, no clock reads |
+
+Each bucket directory carries a `CLAUDE.md` recording the conventions that
+apply inside it -- read that before adding a file there.
 
 ### Core Components
 
@@ -70,11 +84,37 @@ clock reads).
 - `navigation_handler.rb` - URL parsing and navigation logic
 
 **Managers** (`lib/managers/`):
-- `web_context_manager.rb` - WebKit context setup (stateless utility)
-- `settings_manager.rb` - Persistent settings (dark mode, etc.)
-- `session_manager.rb` - Save/restore window sessions
+- `settings_manager.rb` / `session_manager.rb` - preferences and window
+  sessions, over the JSON file stores in `lib/adapters/`
 - `favicon_manager.rb` - Favicon fetching with debouncing
 - `queue_metadata_worker.rb` - Background metadata fetching for queue
+- `site_permission_manager.rb` - stored popup/media/notification/certificate
+  permissions, over the four permission repositories
+- `popup_manager.rb` / `permission_request_manager.rb` - what happens when a
+  site *asks* for a permission (the pair above stores what was granted)
+- `external_opener.rb` / `browser_restarter.rb` / `ipc_manager.rb` - the
+  process and IPC adapters' policy
+- `web_context_manager.rb` - WebKit context setup (stateless utility;
+  a known bucket deviation, see below)
+
+**Adapters** (`lib/adapters/`) -- every non-database side effect:
+`uri_opener.rb` (`xdg-open`), `system_notifier.rb` (`notify-send`),
+`process_launcher.rb`, `ipc_file.rb`, `http_fetcher.rb`, `content_fetcher.rb`,
+`pdf_bookmark_writer.rb`, `fzf_adapter.rb`, `file_system.rb`,
+`session_store.rb`, `settings_store.rb`, `auto_tag_rules_store.rb`.
+
+**Domain** (`lib/domain/`) -- pure values and rules, exhaustively tested with
+no IO. Shared vocabulary worth knowing before writing new logic:
+`url_matcher.rb`, `url_host.rb`, `url_classifier.rb`, `external_schemes.rb`,
+`tag_name.rb`, `frecency.rb`. Large HTML/CSS/JS payloads are constant modules
+here too (`markdown_styles.rb`, `mermaid_script.rb`, `article_extractor_js.rb`,
+`video_popout_styles.rb`).
+
+**Known bucket deviations** (not addressed by the six-bucket remediation):
+`web_context_manager.rb` and `favicon_manager.rb` sit in `lib/managers/` but
+talk to WebKit directly, so they are really Framework. They are left in place
+because both are thin WebKit configuration wrappers with no business rules to
+separate out; revisit if either grows policy.
 
 **History** (`lib/repositories/` + `lib/managers/`):
 - `history_repository.rb` - the `sites`/`pages`/`visits` tables in `history.db`
@@ -103,7 +143,13 @@ clock reads).
 - **Before Nov 2025**: Monolithic `simple_browser.rb` (~2200 lines)
 - **Phase 1-5 (Nov 2025)**: Extracted 14 classes into lib/ subdirectories
 - **Phase 6 (Nov 2025)**: Final refactoring - BrowserWindow and BrowserApplication extraction
-- **Result**: ~60 lines in simple_browser.rb entry point, 15 focused classes averaging ~150 lines each
+- **Six-bucket remediation (Aug 2026)**: Introduced `lib/repositories/` and
+  moved every side effect behind it or `lib/adapters/`; extracted the shared
+  rules into `lib/domain/`; rerouted UI widgets from direct manager calls to
+  Framework-bound callbacks. The root `queue_manager.rb`,
+  `history_manager.rb` and `download_manager.rb` are gone, superseded by
+  repository + manager pairs.
+- **Result**: 1400+ tests across `test/{domain,repositories,managers,adapters,ui,handlers,integration}/`
 
 ### Single-Instance Behavior
 

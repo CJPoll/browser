@@ -46,8 +46,8 @@ class KeyboardHandler
       handle_function_keys(event)
     end
   rescue => e
-    puts "ERROR in KeyboardHandler#handle_key_press: #{e.message}"
-    puts e.backtrace.first(5).join("\n")
+    warn "ERROR in KeyboardHandler#handle_key_press: #{e.message}"
+    warn e.backtrace.first(5).join("\n")
     false  # Allow event propagation on error
   end
 

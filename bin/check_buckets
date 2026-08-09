@@ -1,0 +1,92 @@
+#!/usr/bin/env ruby
+# Mechanical conformance check for the six-bucket architecture.
+#
+# Each check is one Success Criterion of the remediation described in
+# `adrs/001-six-bucket-architecture.md`. Run it before committing a change
+# that moves code between directories:
+#
+#   bin/check_buckets
+#
+# Deliberately NOT wired into `rake default` or any CI gate: the remediation
+# put an enforcement bot out of scope, and these greps are heuristics, not a
+# parser. This is a checklist you run, not a gate that runs you.
+#
+# Full-line comments are ignored, so a file may *name* a manager in its
+# documentation (every widget does -- that is how it says who binds its
+# callbacks) without failing the check. A trailing comment on a line of code
+# is not stripped: `#` cannot be told from string interpolation without
+# parsing, and a false positive here is cheap to reword.
+
+FRAMEWORK_FILES = [
+  'simple_browser.rb',
+  'lib/browser_window.rb',
+  'lib/browser_application.rb',
+  'lib/tab.rb',
+  *Dir['lib/handlers/*.rb']
+].freeze
+
+ALL_RUBY = (Dir['lib/**/*.rb'] + Dir['bin/*.rb'] + ['simple_browser.rb']).freeze
+
+# Yields [path, lineno, line] for every line of code, skipping blank lines and
+# whole-line comments.
+def each_code_line(paths)
+  paths.each do |path|
+    File.readlines(path).each_with_index do |line, index|
+      next if line.strip.empty? || line.match?(/\A\s*#/)
+
+      yield path, index + 1, line
+    end
+  end
+end
+
+def check(name, paths, pattern, except: [])
+  targets = paths.reject { |p| except.any? { |dir| p.start_with?(dir) } }
+  offenders = []
+  each_code_line(targets) do |path, lineno, code|
+    offenders << "  #{path}:#{lineno}: #{code.strip}" if code.match?(pattern)
+  end
+
+  printf("%-58s %s\n", name, offenders.empty? ? 'PASS' : 'FAIL')
+  puts offenders unless offenders.empty?
+  offenders.empty?
+end
+
+results = []
+
+results << check('SQL only in lib/repositories/', ALL_RUBY,
+                 /\b(SELECT\s+.*\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|
+                    CREATE\s+(TABLE|INDEX)|ALTER\s+TABLE|DROP\s+TABLE|PRAGMA\s)/xi,
+                 except: ['lib/repositories/'])
+
+# Ruby's backtick command substitution is deliberately not matched: a backtick
+# is also a markdown fence and a JS template literal, and the two cannot be
+# told apart without parsing. `%x` and the named forms cover the real cases.
+results << check('processes and HTTP only in lib/adapters/', ALL_RUBY,
+                 /(\bsystem\(|\bspawn\(|Process\.spawn|Kernel\.system|Net::HTTP|
+                   IO\.popen|Open3\.|%x[\(\[\{|!\/])/x,
+                 except: ['lib/adapters/'])
+
+results << check('lib/ui/ holds no manager, repo or adapter', Dir['lib/ui/*.rb'],
+                 /(Managers::|Repositories::|Adapters::|@\w*_(manager|repository|adapter)\b)/)
+
+results << check('Framework names no repository or adapter', FRAMEWORK_FILES,
+                 /(Repositories::|Adapters::)/)
+
+results << check('lib/domain/ does no IO and reads no clock', Dir['lib/domain/*.rb'],
+                 /(Time\.now|Date\.today|File\.(read|write|open|binread|exist)|Dir\.|
+                    Net::|\bsystem\(|\bspawn\(|SQLite3)/x)
+
+legacy = %w[queue_manager.rb history_manager.rb download_manager.rb].select { |f| File.exist?(f) }
+printf("%-58s %s\n", 'legacy root managers deleted', legacy.empty? ? 'PASS' : "FAIL: #{legacy.join(', ')}")
+results << legacy.empty?
+
+results << check('no DEBUG puts', ALL_RUBY, /puts\s+["']DEBUG/)
+
+puts
+if results.all?
+  puts 'All bucket checks pass.'
+  exit 0
+else
+  puts "#{results.count(false)} check(s) failed."
+  exit 1
+end

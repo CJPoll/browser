@@ -52,8 +52,8 @@ class NavigationHandler
       toolbar.hide
     end
   rescue => e
-    puts "ERROR in NavigationHandler#navigate_to: #{e.message}"
-    puts e.backtrace.first(5).join("\n")
+    warn "ERROR in NavigationHandler#navigate_to: #{e.message}"
+    warn e.backtrace.first(5).join("\n")
   end
 
   private

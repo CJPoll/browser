@@ -53,8 +53,8 @@ class MouseHandler
       false  # Event not handled
     end
   rescue => e
-    puts "ERROR in MouseHandler#handle_button_press: #{e.message}"
-    puts e.backtrace.first(5).join("\n")
+    warn "ERROR in MouseHandler#handle_button_press: #{e.message}"
+    warn e.backtrace.first(5).join("\n")
     false  # Allow event propagation on error
   end
 
@@ -116,8 +116,8 @@ class MouseHandler
       false  # Let the navigation proceed normally
     end
   rescue => e
-    puts "ERROR in MouseHandler#handle_decide_policy: #{e.message}"
-    puts e.backtrace.first(5).join("\n")
+    warn "ERROR in MouseHandler#handle_decide_policy: #{e.message}"
+    warn e.backtrace.first(5).join("\n")
     false  # Allow default handlers to run on error
   end
 

@@ -4,10 +4,13 @@ Orchestration between Repositories, Adapters, and Domain. See
 `adrs/001-six-bucket-architecture.md` for the bucket rules; this file records
 the conventions this directory follows.
 
-> A few files in this directory are still misfiled (`favicon_manager.rb` and
-> `web_context_manager.rb` both reach straight into WebKit). The six-bucket
-> remediation plan relocates them; the conventions below describe the target,
-> not every file present today.
+> Two files in this directory are misfiled and stayed that way:
+> `favicon_manager.rb` and `web_context_manager.rb` both reach straight into
+> WebKit, which makes them Framework. The six-bucket remediation left them
+> alone because each is a thin WebKit configuration wrapper with no business
+> rules to pull out -- there is nothing to separate. Do not treat them as
+> examples; if either grows policy, that policy belongs in a real manager and
+> the WebKit half belongs in Framework.
 
 ## Conventions
 
