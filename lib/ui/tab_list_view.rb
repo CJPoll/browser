@@ -53,6 +53,15 @@ class TabListView
     @on_tab_reordered = callback
   end
 
+  # Reports that the user dragged one tab onto another's place
+  #
+  # @param from_index [Integer] Where the tab was
+  # @param to_index [Integer] Where the user dropped it
+  # @return [void]
+  def reorder_tab(from_index, to_index)
+    @on_tab_reordered&.call(from_index, to_index)
+  end
+
   # Sets callback to invoke when tab close button is clicked
   #
   # @param callback [Proc] Callback proc accepting tab index: ->(index) { ... }
@@ -278,10 +287,7 @@ class TabListView
         from_index = dropped_index_text.to_i
         to_index = w.instance_variable_get(:@tab_index)
 
-        if to_index && from_index != to_index
-          # Invoke the reorder callback
-          view.instance_variable_get(:@on_tab_reordered)&.call(from_index, to_index)
-        end
+        view.reorder_tab(from_index, to_index) if to_index && from_index != to_index
       end
 
       # Finish the drag operation

@@ -187,6 +187,61 @@ class QueueListViewTest < Minitest::Test
     assert_equal rendered, rows
   end
 
+  # --- Selection ---
+  #
+  # BrowserWindow moves "the entry the user has highlighted" up and down the
+  # queue, and used to read the entry off the selected row itself. These two
+  # methods are what it asks instead.
+
+  def test_selected_entry_is_nothing_until_a_row_is_selected
+    @entries = [build_entry(id: 1)]
+    @view.refresh
+
+    assert_nil @view.selected_entry
+  end
+
+  def test_selected_entry_is_the_entry_behind_the_selected_row
+    @entries = [build_entry(id: 1, title: "First"), build_entry(id: 2, title: "Second")]
+    @view.refresh
+
+    assert @view.select_entry(2)
+    assert_equal 2, @view.selected_entry.id
+    assert_equal "Second", @view.selected_entry.title
+  end
+
+  def test_select_entry_reports_an_entry_that_is_not_on_screen
+    @entries = [build_entry(id: 1)]
+    @view.refresh
+
+    refute @view.select_entry(99)
+    assert_nil @view.selected_entry
+  end
+
+  def test_select_entry_follows_an_entry_that_moved
+    @entries = [build_entry(id: 1), build_entry(id: 2)]
+    @view.refresh
+    @view.select_entry(2)
+
+    # The manager reorders, the window redraws, and the moved entry stays
+    # highlighted where it landed
+    @entries = [build_entry(id: 2), build_entry(id: 1)]
+    @view.refresh
+    @view.select_entry(2)
+
+    assert_equal 2, @view.selected_entry.id
+    assert_equal @view.list_widget.children.first, @view.list_widget.selected_row
+  end
+
+  def test_a_refresh_clears_the_selection_until_it_is_restored
+    @entries = [build_entry(id: 1), build_entry(id: 2)]
+    @view.refresh
+    @view.select_entry(1)
+
+    @view.refresh
+
+    assert_nil @view.selected_entry
+  end
+
   # --- Filters ---
 
   def test_active_filter_tag_names_resolves_ids_through_the_data_source

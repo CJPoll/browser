@@ -184,6 +184,14 @@ Current classes that already conform:
 | `lib/managers/permission_request_manager.rb` | Managers (policy applied when a site asks for a permission) |
 | `lib/managers/web_notification_dispatcher.rb` | Managers (hands a notification to the desktop) |
 | `lib/ui/notification_permission_bar.rb` | UI (data in, intent callbacks out) |
+| `lib/domain/file_filters.rb` | Domain (which types a chooser offers) |
+| `lib/domain/pdf_outline.rb` | Domain (headings -> a flat bookmark plan) |
+| `lib/domain/print_output.rb` | Domain (where a print job put its PDF) |
+| `lib/domain/video_popout_styles.rb` | Domain (constant stylesheet/script module) |
+| `lib/adapters/pdf_bookmark_writer.rb` | Adapters (HexaPDF I/O; launches `bin/add_pdf_bookmarks.rb` with argv) |
+| `lib/managers/pdf_bookmark_manager.rb` | Managers (which PDFs get bookmarks, and in which process) |
+| `lib/ui/file_chooser.rb` | UI (filter descriptors in, chosen paths out) |
+| `lib/ui/video_popout_window.rb` | UI (holds only a webview and the payload it injects) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are

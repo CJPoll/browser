@@ -3,9 +3,7 @@ require_relative '../domain/tag_color'
 
 # Sidebar container managing tabs/history/queue view switching
 class Sidebar
-  # TODO (Phase 6): Consider moving queue reordering logic into Sidebar methods
-  # to eliminate direct GTK widget manipulation from BrowserWindow
-  attr_reader :widget, :visible, :mode, :width, :queue_list_widget
+  attr_reader :widget, :visible, :mode, :width
 
   # Creates a new sidebar
   #
@@ -27,9 +25,6 @@ class Sidebar
     @width = initial_width
     @visible = true
     @mode = :tabs  # Can be :tabs, :history, :queue, or :downloads
-
-    # Expose queue_list_widget for move operations
-    @queue_list_widget = @view_components[:queue_list_view].list_widget
 
     # Create sidebar box
     @widget = Gtk::Box.new(:vertical, 0)
@@ -287,6 +282,21 @@ class Sidebar
     when :downloads
       @view_components[:download_list_view].refresh
     end
+  end
+
+  # The queue entry the user has highlighted in the queue list
+  #
+  # @return [Domain::QueueEntry, nil] Selected entry, or nil if none is selected
+  def selected_queue_entry
+    @view_components[:queue_list_view].selected_entry
+  end
+
+  # Highlights a queue entry, following it across a refresh that moved it
+  #
+  # @param entry_id [Integer] Entry to select
+  # @return [Boolean] Whether the entry was on screen to select
+  def select_queue_entry(entry_id)
+    @view_components[:queue_list_view].select_entry(entry_id)
   end
 
   # Toggles sidebar visibility

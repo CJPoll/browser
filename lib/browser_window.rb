@@ -31,9 +31,12 @@ require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/notification_permission_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
+require_relative 'ui/file_chooser'
+require_relative 'ui/video_popout_window'
 require_relative 'domain/media_permission_type'
 require_relative 'domain/url_classifier'
 require_relative 'domain/article_extractor_js'
+require_relative 'domain/file_filters'
 require_relative 'managers/site_permission_manager'
 require_relative 'managers/popup_manager'
 require_relative 'managers/permission_request_manager'
@@ -48,9 +51,9 @@ require_relative 'managers/session_manager'
 require_relative 'managers/settings_manager'
 require_relative 'managers/external_opener'
 require_relative 'managers/browser_restarter'
+require_relative 'managers/pdf_bookmark_manager'
 require_relative 'handlers/download_handler'
 require_relative 'handlers/markdown_handler'
-require_relative 'pdf_bookmark_processor'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -78,6 +81,7 @@ class BrowserWindow < Gtk::Window
     @session_manager = Managers::SessionManager.new
     @external_opener = Managers::ExternalOpener.new
     @browser_restarter = Managers::BrowserRestarter.new(session_manager: @session_manager)
+    @pdf_bookmark_manager = Managers::PdfBookmarkManager.new
 
     # === Background Workers ===
     @queue_metadata_worker = Managers::QueueMetadataWorker.new(@queue_manager)
@@ -528,6 +532,25 @@ class BrowserWindow < Gtk::Window
   def current_tab
     return nil if @tabs.empty?
     @tabs[@current_tab_index]
+  end
+
+  # The URI the window's first tab is showing
+  #
+  # The application asks so it can decide whether a URL arriving from another
+  # instance should replace the window's untouched first page or open a tab of
+  # its own.
+  #
+  # @return [String, nil] URI of the first tab, if it has one
+  def first_tab_uri
+    @tabs.first&.uri
+  end
+
+  # Points the first tab at a URL
+  #
+  # @param url [String] URL to load
+  # @return [void]
+  def load_url_in_first_tab(url)
+    @tabs.first&.webview&.load_uri(url)
   end
 
   def create_new_tab(uri = "https://www.google.com", switch_to: true)
@@ -1146,63 +1169,32 @@ class BrowserWindow < Gtk::Window
   end
 
   def move_selected_queue_entry_up
-    # Only works when queue sidebar is visible
-    return unless @sidebar_component.mode == :queue
-
-    # Get the currently selected row
-    selected_row = @sidebar_component.queue_list_widget.selected_row
-    return unless selected_row
-
-    # Get the entry data
-    entry = selected_row.instance_variable_get(:@queue_entry)
-    return unless entry
-
-    # Move up in the queue
-    if @queue_manager.move_up(entry.id)
-      # Refresh the queue
-      @sidebar_component.refresh_current_view
-
-      # Find and select the row that now contains this entry
-      @sidebar_component.queue_list_widget.children.each do |row|
-        row_entry = row.instance_variable_get(:@queue_entry)
-        if row_entry && row_entry.id == entry.id
-          @sidebar_component.queue_list_widget.select_row(row)
-          break
-        end
-      end
-
-      puts "Moved up: #{entry.display_title}"
-    end
+    move_selected_queue_entry(:up)
   end
 
   def move_selected_queue_entry_down
+    move_selected_queue_entry(:down)
+  end
+
+  # Moves the entry highlighted in the queue sidebar, keeping it highlighted
+  # where it lands
+  #
+  # @param direction [Symbol] :up or :down
+  # @return [void]
+  private def move_selected_queue_entry(direction)
     # Only works when queue sidebar is visible
     return unless @sidebar_component.mode == :queue
 
-    # Get the currently selected row
-    selected_row = @sidebar_component.queue_list_widget.selected_row
-    return unless selected_row
-
-    # Get the entry data
-    entry = selected_row.instance_variable_get(:@queue_entry)
+    entry = @sidebar_component.selected_queue_entry
     return unless entry
 
-    # Move down in the queue
-    if @queue_manager.move_down(entry.id)
-      # Refresh the queue
-      @sidebar_component.refresh_current_view
+    moved = direction == :up ? @queue_manager.move_up(entry.id) : @queue_manager.move_down(entry.id)
+    return unless moved
 
-      # Find and select the row that now contains this entry
-      @sidebar_component.queue_list_widget.children.each do |row|
-        row_entry = row.instance_variable_get(:@queue_entry)
-        if row_entry && row_entry.id == entry.id
-          @sidebar_component.queue_list_widget.select_row(row)
-          break
-        end
-      end
+    @sidebar_component.refresh_current_view
+    @sidebar_component.select_queue_entry(entry.id)
 
-      puts "Moved down: #{entry.display_title}"
-    end
+    puts "Moved #{direction}: #{entry.display_title}"
   end
 
   def navigate_to_next_queue_item
@@ -1378,69 +1370,38 @@ class BrowserWindow < Gtk::Window
   # Add PDF bookmarks to a previously printed PDF
   # Prompts user to select the PDF file and adds bookmarks based on current markdown
   def add_pdf_bookmarks
-    puts "[BookmarkProcessor] add_pdf_bookmarks called"
+    return unless current_tab
+    return unless @markdown_handler.showing_markdown?(current_tab.webview)
 
-    unless current_tab
-      puts "[BookmarkProcessor] No current tab, aborting"
-      return
-    end
-
-    unless @markdown_handler.showing_markdown?(current_tab.webview)
-      puts "[BookmarkProcessor] Not showing markdown, aborting"
-      return
-    end
-
-    # Get the markdown content for this webview
     markdown_content = @markdown_handler.get_markdown_content(current_tab.webview)
-    unless markdown_content
-      puts "[BookmarkProcessor] No markdown content found, aborting"
-      return
-    end
+    return unless markdown_content
 
-    puts "[BookmarkProcessor] Got markdown content (#{markdown_content.length} bytes)"
-
-    # Open file chooser dialog
-    dialog = Gtk::FileChooserDialog.new(
-      title: "Select PDF to Add Bookmarks",
+    pdf_path = FileChooser.new(
       parent: self,
-      action: :open,
-      buttons: [
-        [Gtk::Stock::CANCEL, :cancel],
-        [Gtk::Stock::OPEN, :accept]
-      ]
-    )
+      title: "Select PDF to Add Bookmarks",
+      filters: Domain::FileFilters.pdf
+    ).choose.first
+    return unless pdf_path
 
-    # Add PDF filter
-    filter = Gtk::FileFilter.new
-    filter.name = "PDF Files"
-    filter.add_mime_type("application/pdf")
-    filter.add_pattern("*.pdf")
-    dialog.add_filter(filter)
-
-    puts "[BookmarkProcessor] Showing file chooser dialog"
-
-    # Run dialog
-    if dialog.run == :accept
-      pdf_path = dialog.filename
-      puts "[BookmarkProcessor] User selected PDF: #{pdf_path}"
-      dialog.destroy
-
-      # Add bookmarks in background to avoid blocking UI
-      Thread.new do
-        puts "[BookmarkProcessor] Starting bookmark addition in background thread"
-        success = PdfBookmarkProcessor.add_bookmarks(pdf_path, markdown_content)
-        GLib::Idle.add do
-          if success
-            puts "[BookmarkProcessor] ✓ PDF bookmarks added successfully to #{pdf_path}"
-          else
-            puts "[BookmarkProcessor] ✗ Failed to add PDF bookmarks"
-          end
-          false
-        end
+    # Off the main loop: opening and rewriting a PDF takes long enough to
+    # freeze the window
+    Thread.new do
+      result = @pdf_bookmark_manager.add_bookmarks(pdf_path, markdown_content)
+      GLib::Idle.add do
+        report_pdf_bookmark_result(result, pdf_path)
+        false
       end
+    end
+  end
+
+  # @param result [Symbol] What the manager reported
+  # @param pdf_path [String] PDF the user chose
+  # @return [void]
+  private def report_pdf_bookmark_result(result, pdf_path)
+    if result == :added
+      puts "✓ PDF bookmarks added to #{pdf_path}"
     else
-      puts "[BookmarkProcessor] User cancelled file selection"
-      dialog.destroy
+      warn "✗ Failed to add PDF bookmarks to #{pdf_path} (#{result})"
     end
   end
 
@@ -1548,52 +1509,15 @@ class BrowserWindow < Gtk::Window
     # Apply page setup to print operation
     print_op.set_page_setup(page_setup)
 
-    # Auto-add bookmarks when printing markdown to PDF
+    # A markdown document printed to a PDF gets its headings as bookmarks. The
+    # manager decides whether this job qualifies; the window only supplies what
+    # it printed and where the job says it went.
     print_op.signal_connect('finished') do
-      # Get print settings to check if printing to PDF
       settings = print_op.print_settings
-      output_uri = settings.get('output-uri') if settings
-
-      # Only auto-add bookmarks if:
-      # 1. Printing to file (not physical printer)
-      # 2. Currently viewing markdown
-      # 3. Output is a PDF file
-      if output_uri &&
-         output_uri.end_with?('.pdf') &&
-         @markdown_handler.showing_markdown?(current_tab.webview)
-
-        # Decode file:// URI to local path
-        pdf_path = URI.decode_www_form_component(output_uri.sub('file://', ''))
-        markdown_content = @markdown_handler.get_markdown_content(current_tab.webview)
-
-        if markdown_content
-          # Save markdown content to temp file
-          require 'tempfile'
-          temp_md = Tempfile.new(['markdown', '.md'])
-          temp_md.write(markdown_content)
-          temp_md.close
-
-          # Add bookmarks in separate Ruby process to isolate potential crashes
-          # Use spawn + detach so browser isn't affected if PDF processing crashes
-          pid = spawn(
-            'bundle', 'exec', 'ruby', '-e',
-            <<~RUBY,
-              sleep 0.5  # Wait for PDF to be fully written
-              require_relative 'lib/pdf_bookmark_processor'
-              markdown = File.read('#{temp_md.path}')
-              success = PdfBookmarkProcessor.add_bookmarks('#{pdf_path}', markdown)
-              puts success ? '[AutoBookmark] ✓ Bookmarks added automatically' : '[AutoBookmark] ✗ Bookmark addition failed'
-              File.delete('#{temp_md.path}') rescue nil
-            RUBY
-            chdir: Dir.pwd,
-            out: $stdout,
-            err: $stderr
-          )
-
-          # Detach the child process so it runs independently
-          Process.detach(pid)
-        end
-      end
+      @pdf_bookmark_manager.add_bookmarks_for_print(
+        settings&.get('output-uri'),
+        printed_markdown
+      )
     end
 
     # Run the print dialog - user can select "Print to File" for PDF output
@@ -1605,6 +1529,17 @@ class BrowserWindow < Gtk::Window
     when :cancel
       puts "Print cancelled"
     end
+  end
+
+  # The markdown behind the page being printed, if it is a rendered markdown
+  # document rather than an ordinary page
+  #
+  # @return [String, nil] Markdown source
+  private def printed_markdown
+    return nil unless current_tab
+    return nil unless @markdown_handler.showing_markdown?(current_tab.webview)
+
+    @markdown_handler.get_markdown_content(current_tab.webview)
   end
 
   # ========================================
@@ -1697,71 +1632,23 @@ class BrowserWindow < Gtk::Window
   end
 
   def open_file
-    # Create file chooser dialog
-    dialog = Gtk::FileChooserDialog.new(
-      title: "Open File",
+    filepath = FileChooser.new(
       parent: self,
-      action: :open,
-      buttons: [
-        ["Cancel", :cancel],
-        ["Open", :accept]
-      ]
-    )
+      title: "Open File",
+      filters: Domain::FileFilters.open_file
+    ).choose.first
+    return unless filepath
 
-    # Add file filters
-    # All files
-    filter_all = Gtk::FileFilter.new
-    filter_all.name = "All Files"
-    filter_all.add_pattern("*")
-    dialog.add_filter(filter_all)
+    file_uri = "file://#{filepath}"
 
-    # HTML files
-    filter_html = Gtk::FileFilter.new
-    filter_html.name = "HTML Files"
-    filter_html.add_mime_type("text/html")
-    filter_html.add_pattern("*.html")
-    filter_html.add_pattern("*.htm")
-    dialog.add_filter(filter_html)
-
-    # Markdown files
-    filter_md = Gtk::FileFilter.new
-    filter_md.name = "Markdown Files"
-    filter_md.add_mime_type("text/markdown")
-    filter_md.add_pattern("*.md")
-    filter_md.add_pattern("*.markdown")
-    dialog.add_filter(filter_md)
-
-    # PDF files
-    filter_pdf = Gtk::FileFilter.new
-    filter_pdf.name = "PDF Files"
-    filter_pdf.add_mime_type("application/pdf")
-    filter_pdf.add_pattern("*.pdf")
-    dialog.add_filter(filter_pdf)
-
-    # Image files
-    filter_images = Gtk::FileFilter.new
-    filter_images.name = "Images"
-    filter_images.add_mime_type("image/*")
-    dialog.add_filter(filter_images)
-
-    # Run dialog
-    if dialog.run == Gtk::ResponseType::ACCEPT
-      filepath = dialog.filename
-      if filepath
-        # Open file in current tab or new tab
-        file_uri = "file://#{filepath}"
-        if current_tab && current_tab.uri == "about:blank"
-          # Current tab is blank, use it
-          current_tab.webview.load_uri(file_uri)
-        else
-          # Open in new tab
-          create_new_tab(file_uri)
-        end
-        puts "Opening file: #{filepath}"
-      end
+    # A blank tab is the one the user meant; anything else keeps its page
+    if current_tab && current_tab.uri == "about:blank"
+      current_tab.webview.load_uri(file_uri)
+    else
+      create_new_tab(file_uri)
     end
 
-    dialog.destroy
+    puts "Opening file: #{filepath}"
   end
 
   # ========================================
@@ -2129,96 +2016,19 @@ class BrowserWindow < Gtk::Window
   # @param request [WebKit2Gtk::FileChooserRequest] The file chooser request
   # @return [Boolean] True to indicate we handled the request
   def handle_file_chooser_request(webview, request)
-    # Determine dialog action based on whether multiple selection is allowed
-    action = :open
+    # WebKit supplies a filter for the element's `accept` attribute; the rest
+    # is what this browser adds on top of it
+    filters = [request.mime_types_filter, *Domain::FileFilters.for_upload(request.mime_types)]
 
-    # Create file chooser dialog
-    dialog = Gtk::FileChooserDialog.new(
-      title: "Select File",
+    chosen = FileChooser.new(
       parent: self,
-      action: action,
-      buttons: [
-        ["Cancel", :cancel],
-        ["Open", :accept]
-      ]
-    )
+      title: "Select File",
+      filters: filters,
+      select_multiple: request.select_multiple?,
+      preview: true
+    ).choose
 
-    # Allow multiple selection if the request supports it
-    dialog.select_multiple = request.select_multiple?
-
-    # Apply the MIME type filter from the request
-    if request.mime_types_filter
-      dialog.add_filter(request.mime_types_filter)
-    end
-
-    # Add an "All Images" filter with explicit extensions (helps with GIFs)
-    mime_types = request.mime_types || []
-    if mime_types.any? { |m| m.start_with?("image/") }
-      images_filter = Gtk::FileFilter.new
-      images_filter.name = "All Images"
-      images_filter.add_mime_type("image/*")
-      # Explicitly add common image extensions for better compatibility
-      %w[gif png jpg jpeg webp bmp tiff svg ico].each do |ext|
-        images_filter.add_pattern("*.#{ext}")
-        images_filter.add_pattern("*.#{ext.upcase}")
-      end
-      dialog.add_filter(images_filter)
-    end
-
-    # Always add an "All Files" option
-    all_filter = Gtk::FileFilter.new
-    all_filter.name = "All Files"
-    all_filter.add_pattern("*")
-    dialog.add_filter(all_filter)
-
-    # Create preview widget for images
-    preview_image = Gtk::Image.new
-    preview_image.set_size_request(200, 200)
-    dialog.preview_widget = preview_image
-    dialog.use_preview_label = false
-
-    # Connect to update-preview signal for image preview
-    dialog.signal_connect("update-preview") do
-      preview_filename = dialog.preview_filename
-      have_preview = false
-
-      if preview_filename && File.exist?(preview_filename)
-        begin
-          # Try to load as image, scaled to 200x200
-          pixbuf = GdkPixbuf::Pixbuf.new(file: preview_filename, width: 200, height: 200)
-          if pixbuf
-            preview_image.pixbuf = pixbuf
-            have_preview = true
-            puts "Preview loaded: #{preview_filename} (#{pixbuf.width}x#{pixbuf.height})"
-          end
-        rescue => e
-          # Not an image or failed to load - that's fine
-          puts "Preview failed for #{preview_filename}: #{e.class} - #{e.message}"
-          preview_image.clear
-        end
-      else
-        preview_image.clear
-      end
-
-      dialog.preview_widget_active = have_preview
-    end
-
-    # Run the dialog
-    response = dialog.run
-
-    if response == :accept
-      # Get selected files and pass to WebKit
-      filenames = dialog.filenames
-      if filenames && !filenames.empty?
-        request.select_files(filenames)
-      else
-        request.cancel
-      end
-    else
-      request.cancel
-    end
-
-    dialog.destroy
+    chosen.empty? ? request.cancel : request.select_files(chosen)
 
     # Return true to indicate we handled the request
     true

@@ -60,6 +60,9 @@ clock reads).
 - `tab_list_view.rb` - Tabs list in sidebar
 - `history_list_view.rb` - History list in sidebar
 - `queue_list_view.rb` - Queue list in sidebar with drag-and-drop reordering
+- `file_chooser.rb` - Modal file chooser built from filter descriptors
+  (Ctrl+O, the PDF bookmark chooser, and `<input type="file">`)
+- `video_popout_window.rb` - Picture-in-Picture floating window (WIP)
 
 **Handlers** (`lib/handlers/`):
 - `keyboard_handler.rb` - Keyboard shortcut routing (25+ shortcuts)
@@ -84,8 +87,16 @@ clock reads).
 - `queue_manager.rb` - queue CRUD, metadata and tags (the subdomain API)
 - `queue_navigation_manager.rb` - next/previous/remove-and-advance
 
+**Printing to PDF** (`lib/domain/` + `lib/adapters/` + `lib/managers/`):
+- `pdf_outline.rb` - markdown headings and the bookmark tree they make
+- `pdf_bookmark_writer.rb` - HexaPDF: finds each heading in the PDF and
+  writes the outline; also launches `bin/add_pdf_bookmarks.rb` for the
+  after-printing case
+- `pdf_bookmark_manager.rb` - which PDFs get bookmarks, and in which process
+
 **External Components** (project root):
-- `video_popout_window.rb` - Picture-in-Picture floating window (WIP)
+- `bin/add_pdf_bookmarks.rb` - adds bookmarks to a just-printed PDF in a
+  process of its own, so a PDF library crash cannot take the browser down
 - `run` - Wrapper script for asdf environment setup
 
 **Migration History**:

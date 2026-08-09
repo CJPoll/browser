@@ -3,6 +3,9 @@ require_relative 'managers/ipc_manager'
 
 # GTK Application managing browser lifecycle and single-instance behavior
 class BrowserApplication < Gtk::Application
+  # What the first tab shows when nobody has navigated it anywhere
+  UNTOUCHED_FIRST_TAB_URIS = ['https://www.example.com/', 'https://www.example.com'].freeze
+
   # Creates a new browser application
   def initialize
     super("com.example.browser", Gio::ApplicationFlags::HANDLES_OPEN | Gio::ApplicationFlags::HANDLES_COMMAND_LINE)
@@ -81,12 +84,10 @@ class BrowserApplication < Gtk::Application
   # @param url [String] URL to open
   # @return [void]
   def open_in_main_window(url)
-    tabs = @main_window.instance_variable_get(:@tabs)
-    first_tab_uri = tabs.first&.uri
-
-    # If first tab is example.com (default), navigate it instead of creating new tab
-    if first_tab_uri == "https://www.example.com/" || first_tab_uri == "https://www.example.com"
-      tabs.first.webview.load_uri(url)
+    # A window still showing the page it opened on has nothing worth keeping,
+    # so the URL replaces it rather than opening a tab beside it
+    if UNTOUCHED_FIRST_TAB_URIS.include?(@main_window.first_tab_uri)
+      @main_window.load_url_in_first_tab(url)
     else
       @main_window.create_new_tab(url)
     end
@@ -109,11 +110,7 @@ class BrowserApplication < Gtk::Application
     end
 
     # Load URL if provided
-    if url && !url.empty?
-      # Navigate the first tab to the URL
-      tabs = window.instance_variable_get(:@tabs)
-      tabs.first&.webview&.load_uri(url)
-    end
+    window.load_url_in_first_tab(url) if url && !url.empty?
 
     window
   end

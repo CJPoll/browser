@@ -137,6 +137,24 @@ it. Keep the wrapper honest rather than ceremonial:
   wraps one launch, but it also fixes the order (save the session, *then*
   start the replacement) that used to be spelled out in `BrowserWindow`.
 
+## Two callers, two methods -- name the difference
+
+`Managers::PdfBookmarkManager` writes bookmarks into a PDF for two callers
+that need different things, and says so in the method names rather than in a
+flag:
+
+- `add_bookmarks(path, markdown)` -- the user chose a PDF and is waiting, so it
+  runs here and returns `:added`/`:failed`. The Framework puts it on a thread
+  because it is slow, which is a UI concern and stays with the UI.
+- `add_bookmarks_for_print(output_uri, markdown)` -- a print job just finished,
+  so the work goes to a *separate process*: it is unattended, and a crash in a
+  PDF library must not take the browser with it.
+
+The policy that is genuinely the manager's is which jobs qualify at all -- a
+job that went to a real printer, produced a `.ps`, or came from a page that was
+not markdown gets `:not_a_pdf`/`:no_markdown` and no writer call. Those three
+answers were an `if` with three clauses inside a WebKit signal handler.
+
 ## The Framework's watermark belongs to the manager
 
 `BrowserApplication` used to carry `@last_ipc_check` and compare timestamps

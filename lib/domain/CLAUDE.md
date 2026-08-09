@@ -50,6 +50,9 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::PopupDecision` | where does this popup belong -- window, tab, or nowhere? |
 | `Domain::PermissionDecision` | may this site have what it is asking for? |
 | `Domain::WebNotification` | what does this page's notification say, and who sent it? |
+| `Domain::FileFilters` | what file types does this chooser offer? |
+| `Domain::PdfOutline` | what bookmark tree do this document's headings make? |
+| `Domain::PrintOutput` | where did this print job put its PDF, if it made one? |
 
 ## Presentation rules are Domain too
 
@@ -131,6 +134,36 @@ The same check is worth running on the *rendered* output: comparing the old
 and new pipeline's HTML byte for byte across a handful of documents (plain,
 mermaid, page break, no heading) is what turns "I think this is a pure move"
 into a fact.
+
+`Domain::VideoPopoutStyles` adds the third convention: **the payload that gets
+embedded in another payload owns its own escaping.** The CSS travels inside a
+JavaScript template literal, so `injection_script` escapes backticks -- and
+the test asserts that exactly two unescaped backticks survive, which is the
+kind of thing nobody notices breaking until a stylesheet with a backtick in it
+turns the rest of the script into syntax errors.
+
+## Plan the work, let the adapter do it
+
+`Domain::PdfOutline` shows the shape to reach for when a pure computation is
+interrupted by an unavoidable effect in the middle:
+
+```
+headings(markdown)  ->  [Heading]     # text and level, pure
+   ...the adapter searches the PDF for each heading's page...
+plan(headings)      ->  [Bookmark]    # nesting resolved, pure
+```
+
+Rather than hand the adapter a tree to walk (which would put "what nests under
+what" back in the effect), `plan` returns a **flat list where each item names
+its parent by index**. The adapter creates them in order and looks each parent
+up in what it has already created -- five lines, no recursion, no rules.
+
+The same split is why the outline's one genuine bug is *visible*: a document
+that skips a heading level and then repeats the deeper one leaves a hole in
+the parent stack, and `plan` raises `MalformedHeadingLevels` where the
+original raised `NoMethodError` on nil three layers down. Preserved rather than
+fixed (the plan's rule), but now it is a named error with a test instead of a
+crash.
 
 ## Rules that change often are data, not code
 

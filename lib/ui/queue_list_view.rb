@@ -305,14 +305,30 @@ class QueueListView
     return unless @callbacks[:on_move_entry]&.call(entry_id, position)
 
     refresh
+    select_entry(entry_id)
+  end
 
-    @list_widget.children.each do |child|
-      child_entry = child.instance_variable_get(:@queue_entry)
-      if child_entry && child_entry.id == entry_id
-        @list_widget.select_row(child)
-        break
-      end
-    end
+  # The queue entry behind the highlighted row
+  #
+  # The rows are this widget's own, so nobody outside it should be reading an
+  # entry off one -- they ask here instead.
+  #
+  # @return [Domain::QueueEntry, nil] Selected entry, or nil if none is selected
+  def selected_entry
+    row = @list_widget.selected_row
+    row && entry_for(row)
+  end
+
+  # Highlights the row showing an entry, if it is on screen
+  #
+  # @param entry_id [Integer] Entry to select
+  # @return [Boolean] Whether a row was found to select
+  def select_entry(entry_id)
+    row = @list_widget.children.find { |child| entry_for(child)&.id == entry_id }
+    return false unless row
+
+    @list_widget.select_row(row)
+    true
   end
 
   # Updates the drop indicator position
@@ -349,6 +365,19 @@ class QueueListView
   end
 
   private
+
+  # The entry a row was built from.
+  #
+  # GTK rows carry no user data of their own, so `create_queue_row` stashes the
+  # entry on the row it creates and this reads it back. Stashing data on a
+  # widget this view owns is the GTK idiom; reaching into a widget somebody
+  # else owns is what `selected_entry` and `select_entry` exist to prevent.
+  #
+  # @param row [Gtk::Widget] A row of this list
+  # @return [Domain::QueueEntry, nil] The entry it shows
+  def entry_for(row)
+    row.instance_variable_get(:@queue_entry)
+  end
 
   # @param tag_name [String] Tag name to look up
   # @return [Domain::Tag, nil] The tag, when the data source knows it

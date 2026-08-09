@@ -46,6 +46,32 @@ end
 - **`system` returns `nil` when the command is missing**, so coerce with `!!`
   before returning -- callers branch on true/false, not on nil.
 
+## Running Ruby in another process: ship a script, pass arguments
+
+`Adapters::PdfBookmarkWriter#add_bookmarks_later` starts a second Ruby process
+so a crash inside a PDF library cannot take the browser down with it. The
+version it replaced built that process's program by interpolating paths into a
+heredoc:
+
+```ruby
+spawn('bundle', 'exec', 'ruby', '-e', <<~RUBY)
+  markdown = File.read('#{temp_md.path}')          # a filename with a quote
+  PdfBookmarkProcessor.add_bookmarks('#{pdf_path}', markdown)   # in it is code
+RUBY
+```
+
+The argv rule above (arguments are data, never syntax) applies just as much
+when the "shell" is Ruby. The fix is the same shape: a real script in `bin/`,
+and the paths as `ARGV`.
+
+- **The script is a repository file**, so a test can assert it exists at the
+  path the adapter names -- a broken constant would otherwise only show up as
+  a background process that silently does nothing.
+- **`chdir` is the project, not `Dir.pwd`.** `bundle exec` needs the Gemfile,
+  and the browser's working directory is wherever the desktop launched it.
+- **The child owns the temp file it was given**: it reads the markdown and
+  deletes it. The parent cannot know when the child is finished with it.
+
 ## HTTP: return the body, raise the failure
 
 `Adapters::HttpFetcher` answers with the response body, or nil when the server
