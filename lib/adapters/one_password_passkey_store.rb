@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'json'
-require 'open3'
 require 'time'
 require_relative '../domain/passkey'
 require_relative '../domain/base64url'
@@ -29,7 +28,24 @@ module Adapters
     SECTION = 'passkey'
     JSON_FORMAT = %w[--format json].freeze
 
-    CAPTURE_RUNNER = ->(*argv) { Open3.capture3(*argv) }
+    # Runs argv with stdin on /dev/null and captures both outputs.
+    #
+    # Not `Open3.capture3`: that hands the child an (empty) pipe, and
+    # `op item create` reads any piped stdin as a JSON item template --
+    # "invalid JSON in piped input" -- instead of using the arguments.
+    CAPTURE_RUNNER = lambda do |*argv|
+      stdout_reader, stdout_writer = IO.pipe
+      stderr_reader, stderr_writer = IO.pipe
+      pid = Process.spawn(*argv, in: File::NULL, out: stdout_writer, err: stderr_writer)
+      stdout_writer.close
+      stderr_writer.close
+      stderr_thread = Thread.new { stderr_reader.read }
+      stdout = stdout_reader.read
+      _, status = Process.wait2(pid)
+      [stdout, stderr_thread.value, status]
+    ensure
+      [stdout_reader, stderr_reader].each { |io| io&.close }
+    end
 
     # @param runner [#call] Receives argv, answers `[stdout, stderr, status]`
     def initialize(runner: CAPTURE_RUNNER)

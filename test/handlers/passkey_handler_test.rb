@@ -203,10 +203,11 @@ class HandlersPasskeyHandlerTest < Minitest::Test
     handler = build_handler(create_prompt)
     handler.handle_message(@webview, create_message)
 
-    @shown.first[:on_allow].call(0)
+    response = @shown.first[:on_allow].call(0)
 
     assert_equal [create_prompt], @manager.registered
     assert_equal [completion_of(@manager.register(create_prompt))], delivered
+    assert_equal @manager.register(create_prompt), response, 'the window is told what the page got'
   end
 
   def test_allowing_a_sign_in_prompt_authenticates_with_the_chosen_passkey
@@ -224,10 +225,11 @@ class HandlersPasskeyHandlerTest < Minitest::Test
     handler = build_handler(create_prompt)
     handler.handle_message(@webview, create_message)
 
-    @shown.first[:on_cancel].call
+    response = @shown.first[:on_cancel].call
 
     assert_equal [create_prompt], @manager.cancelled
     assert_equal [completion_of(@manager.cancel(create_prompt))], delivered
+    assert_equal @manager.cancel(create_prompt), response
   end
 
   # === one request at a time per page ===

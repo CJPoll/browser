@@ -182,6 +182,28 @@ class AdaptersOnePasswordPasskeyStoreTest < Minitest::Test
     assert_raises(Adapters::OnePasswordPasskeyStore::Unavailable) { store.find_for_rp('example.com') }
   end
 
+  # --- the production runner ---
+
+  def test_the_runner_captures_both_outputs_and_the_status
+    stdout, stderr, status = Adapters::OnePasswordPasskeyStore::CAPTURE_RUNNER.call('sh', '-c', 'echo out; echo err >&2; exit 3')
+
+    assert_equal "out\n", stdout
+    assert_equal "err\n", stderr
+    refute status.success?
+  end
+
+  def test_the_runner_gives_the_command_no_piped_input
+    # `op item create` reads a piped stdin as a JSON template, so the child
+    # must see /dev/null rather than an empty pipe.
+    stdout, = Adapters::OnePasswordPasskeyStore::CAPTURE_RUNNER.call('sh', '-c', 'readlink /proc/self/fd/0')
+
+    assert_equal "/dev/null\n", stdout
+  end
+
+  def test_the_runner_reports_a_missing_command_as_an_error
+    assert_raises(Errno::ENOENT) { Adapters::OnePasswordPasskeyStore::CAPTURE_RUNNER.call('no-such-command-here') }
+  end
+
   private
 
   def assert_includes_pair(argv, flag, value)

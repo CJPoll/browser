@@ -25,7 +25,9 @@ class PasskeyHandler
 
   # @param callbacks [Hash] `show_prompt: ->(prompt, on_allow:, on_cancel:)`,
   #   where `on_allow` takes the index of the chosen candidate (0 when there
-  #   is nothing to choose) and `on_cancel` takes nothing
+  #   is nothing to choose) and `on_cancel` takes nothing. Both return the
+  #   `Domain::PasskeyResponse` that was delivered to the page, so the caller
+  #   can tell a passkey that was made from one the store refused.
   # @param manager [Managers::PasskeyManager]
   def initialize(callbacks, manager: Managers::PasskeyManager.new)
     @callbacks = callbacks
@@ -105,9 +107,11 @@ class PasskeyHandler
     ))
   end
 
+  # @return [Domain::PasskeyResponse] What was delivered
   def deliver(webview, response)
     @pending.delete(webview.object_id)
     evaluate(webview, response)
+    response
   end
 
   # Settles the page's promise. No completion block: if the page has

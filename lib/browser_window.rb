@@ -1988,8 +1988,12 @@ class BrowserWindow < Gtk::Window
   def show_passkey_prompt_bar(prompt, on_allow:, on_cancel:)
     bar = PasskeyPromptBar.new(
       on_allow: ->(choice) {
-        on_allow.call(choice)
-        puts "Passkey #{prompt.create? ? 'created' : 'used'} for #{prompt.rp_id}"
+        response = on_allow.call(choice)
+        if response.resolved?
+          puts "Passkey #{prompt.create? ? 'created' : 'used'} for #{prompt.rp_id}"
+        else
+          puts "Passkey request failed for #{prompt.rp_id}: #{response.error_message}"
+        end
       },
       on_cancel: -> {
         on_cancel.call
