@@ -1,5 +1,6 @@
 require 'gtk3'
 require 'cgi'
+require_relative '../domain/sidebar_title'
 
 # Sidebar view for displaying browsing history
 #
@@ -141,7 +142,7 @@ class HistoryListView
     # Title
     title = entry.display_title.to_s
     title_label = Gtk::Label.new
-    title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
+    title_label.markup = Domain::SidebarTitle.markup(title)
     title_label.halign = :start
     title_label.ellipsize = :end
     vbox.pack_start(title_label, expand: false, fill: false, padding: 0)

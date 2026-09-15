@@ -1,5 +1,6 @@
 require 'gtk3'
 require 'cgi'
+require_relative '../domain/sidebar_title'
 
 # Sidebar view for displaying browser tabs
 class TabListView
@@ -173,7 +174,7 @@ class TabListView
     # Title
     title = tab.title || "New Tab"
     title_label = Gtk::Label.new
-    title_label.markup = "<b>#{CGI.escapeHTML(title[0..40])}</b>"
+    title_label.markup = Domain::SidebarTitle.markup(title, max_length: 41)
     title_label.halign = :start
     title_label.ellipsize = :end
     vbox.pack_start(title_label, expand: false, fill: false, padding: 0)

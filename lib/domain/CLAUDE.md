@@ -53,6 +53,7 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::FileFilters` | what file types does this chooser offer? |
 | `Domain::PdfOutline` | what bookmark tree do this document's headings make? |
 | `Domain::PrintOutput` | where did this print job put its PDF, if it made one? |
+| `Domain::SidebarTitle` | how is a sidebar row's title drawn? |
 
 ## Presentation rules are Domain too
 
