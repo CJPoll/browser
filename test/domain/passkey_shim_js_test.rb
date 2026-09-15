@@ -26,6 +26,12 @@ class PasskeyShimJsTest < Minitest::Test
     assert_includes script, 'isConditionalMediationAvailable'
   end
 
+  def test_answers_the_client_capabilities_query_as_a_platform_authenticator
+    assert_includes script, 'PublicKeyCredential.getClientCapabilities = function ()'
+    assert_includes script, 'passkeyPlatformAuthenticator: true'
+    assert_includes script, 'conditionalGet: false'
+  end
+
   def test_exposes_the_completion_entry_point_the_framework_calls
     assert_includes script, 'window.__toyPasskey = {'
     assert_includes script, 'complete: function (result)'

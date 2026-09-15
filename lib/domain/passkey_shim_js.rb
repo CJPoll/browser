@@ -121,6 +121,14 @@ module Domain
         function PublicKeyCredential() { throw new TypeError('Illegal constructor'); }
         PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function () { return Promise.resolve(true); };
         PublicKeyCredential.isConditionalMediationAvailable = function () { return Promise.resolve(false); };
+        PublicKeyCredential.getClientCapabilities = function () {
+          return Promise.resolve({
+            conditionalCreate: false, conditionalGet: false, hybridTransport: false,
+            passkeyPlatformAuthenticator: true, userVerifyingPlatformAuthenticator: true,
+            relatedOrigins: false, signalAllAcceptedCredentials: false,
+            signalCurrentUserDetails: false, signalUnknownCredential: false
+          });
+        };
         PublicKeyCredential.parseCreationOptionsFromJSON = function (json) {
           var options = Object.assign({}, json);
           options.challenge = decode(json.challenge);

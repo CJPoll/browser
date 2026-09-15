@@ -108,13 +108,16 @@ class Tab
 
   private
 
-  # Chrome 120 on Linux user agent (Discord requires Chrome, Firefox, Edge, or Opera)
-  CHROME_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  # Chrome on Linux user agent. Discord requires Chrome, Firefox, Edge or
+  # Opera; Google refuses to create passkeys for the default "Safari on
+  # Linux" identity, and flags a Chrome version this old as unsupported too.
+  CHROME_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
   # Hosts that need Chrome user agent to work properly
   CHROME_UA_HOSTS = %w[
     discord.com
     discordapp.com
+    google.com
   ].freeze
 
   # Applies appropriate user agent based on the URI
