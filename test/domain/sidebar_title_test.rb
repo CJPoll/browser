@@ -7,7 +7,7 @@ class SidebarTitleTest < Minitest::Test
   # ========================================
 
   def test_markup_carries_the_x_large_size
-    assert_includes Domain::SidebarTitle.markup("Hello"), "size='x-large'"
+    assert_includes Domain::SidebarTitle.markup("Hello"), "size='large'"
   end
 
   def test_markup_is_bold
@@ -15,11 +15,11 @@ class SidebarTitleTest < Minitest::Test
   end
 
   def test_title_size_constant_is_x_large
-    assert_equal 'x-large', Domain::SidebarTitle::TITLE_SIZE
+    assert_equal 'large', Domain::SidebarTitle::TITLE_SIZE
   end
 
   def test_markup_wraps_the_escaped_text_in_a_single_span
-    assert_equal "<span size='x-large' weight='bold'>Hello</span>",
+    assert_equal "<span size='large' weight='bold'>Hello</span>",
                  Domain::SidebarTitle.markup("Hello")
   end
 
@@ -41,7 +41,7 @@ class SidebarTitleTest < Minitest::Test
 
   def test_markup_matches_cgi_escapehtml_for_the_content
     title = "Tom & Jerry <fun> \"quoted\""
-    expected = "<span size='x-large' weight='bold'>#{CGI.escapeHTML(title)}</span>"
+    expected = "<span size='large' weight='bold'>#{CGI.escapeHTML(title)}</span>"
     assert_equal expected, Domain::SidebarTitle.markup(title)
   end
 
@@ -64,7 +64,7 @@ class SidebarTitleTest < Minitest::Test
   end
 
   def test_short_titles_are_not_padded_or_truncated
-    assert_equal "<span size='x-large' weight='bold'>abc</span>",
+    assert_equal "<span size='large' weight='bold'>abc</span>",
                  Domain::SidebarTitle.markup("abc")
   end
 
@@ -80,12 +80,12 @@ class SidebarTitleTest < Minitest::Test
   # ========================================
 
   def test_nil_title_produces_valid_empty_markup_without_raising
-    assert_equal "<span size='x-large' weight='bold'></span>",
+    assert_equal "<span size='large' weight='bold'></span>",
                  Domain::SidebarTitle.markup(nil)
   end
 
   def test_empty_title_produces_valid_empty_markup_without_raising
-    assert_equal "<span size='x-large' weight='bold'></span>",
+    assert_equal "<span size='large' weight='bold'></span>",
                  Domain::SidebarTitle.markup("")
   end
 end

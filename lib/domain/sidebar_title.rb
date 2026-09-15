@@ -10,7 +10,7 @@ module Domain
   # drift apart on size or escaping.
   module SidebarTitle
     # Pango named size for the title span; lives here so the size is defined once
-    TITLE_SIZE = 'x-large'.freeze
+    TITLE_SIZE = 'large'.freeze
 
     # Builds the Pango markup for a sidebar row's title.
     #

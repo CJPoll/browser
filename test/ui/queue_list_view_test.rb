@@ -100,7 +100,7 @@ class QueueListViewTest < Minitest::Test
 
     title_markup = row_markups.find { |markup| markup.include?("First") }
     refute_nil title_markup
-    assert_includes title_markup, "size='x-large'"
+    assert_includes title_markup, "size='large'"
   end
 
   def test_refresh_replaces_previous_rows
