@@ -13,6 +13,7 @@ GEM
     cairo-gobject (4.3.9)
       cairo (>= 1.16.2)
       glib2 (= 4.3.9)
+    cbor (0.5.10.3)
     cmdparse (3.0.7)
     crack (1.0.1)
       bigdecimal
@@ -84,10 +85,12 @@ PLATFORMS
   x86_64-linux
 
 DEPENDENCIES
+  cbor (~> 0.5)
   gtk3 (~> 4.3)
   hexapdf (~> 1.0)
   minitest (~> 5.25)
   nokogiri (~> 1.16)
+  public_suffix (~> 6.0)
   rake (~> 13.0)
   redcarpet (~> 3.6)
   sqlite3 (~> 2.4)
