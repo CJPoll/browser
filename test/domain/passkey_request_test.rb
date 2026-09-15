@@ -184,6 +184,22 @@ class PasskeyRequestTest < Minitest::Test
     assert_kind_of ArgumentError, Domain::PasskeyRequest::Malformed.new
   end
 
+  # --- request_id_of ---
+
+  def test_recovers_the_request_id_from_a_message_that_does_not_parse_as_a_request
+    json = JSON.generate({ 'id' => 'passkey-9', 'op' => 'create', 'options' => {} })
+
+    assert_raises(Domain::PasskeyRequest::Malformed) { Domain::PasskeyRequest.parse(json) }
+    assert_equal 'passkey-9', Domain::PasskeyRequest.request_id_of(json)
+  end
+
+  def test_has_no_request_id_for_text_that_is_not_a_message
+    assert_nil Domain::PasskeyRequest.request_id_of('not json')
+    assert_nil Domain::PasskeyRequest.request_id_of('[1]')
+    assert_nil Domain::PasskeyRequest.request_id_of(JSON.generate({ 'id' => '' }))
+    assert_nil Domain::PasskeyRequest.request_id_of(nil)
+  end
+
   # --- Value semantics ---
 
   def test_requests_parsed_from_the_same_message_are_equal

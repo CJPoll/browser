@@ -32,6 +32,18 @@ module Domain
                 :exclude_credential_ids, :allow_credential_ids,
                 :user_verification, :mediation
 
+    # The request id of a message that may otherwise be unusable, so a
+    # malformed request can still be rejected rather than left hanging
+    #
+    # @param json [String] The message the page posted
+    # @return [String, nil] The id, if the message carries one
+    def self.request_id_of(json)
+      data = JSON.parse(json)
+      data.is_a?(Hash) && present?(data['id']) ? data['id'] : nil
+    rescue JSON::ParserError, TypeError
+      nil
+    end
+
     # Parses the shim's message
     #
     # @param json [String] The message the page posted
