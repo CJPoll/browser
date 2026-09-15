@@ -33,6 +33,7 @@ require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
 require_relative 'ui/file_chooser'
 require_relative 'ui/video_popout_window'
+require_relative 'domain/crash_page'
 require_relative 'domain/media_permission_type'
 require_relative 'domain/url_classifier'
 require_relative 'domain/article_extractor_js'
@@ -781,6 +782,12 @@ class BrowserWindow < Gtk::Window
       true  # We handled it, don't emit load-failed
     end
 
+    # The process rendering this tab died: WebKit leaves the tab blank, so say
+    # what happened instead of losing the page silently
+    tab.webview.signal_connect("web-process-terminated") do |_webview, reason|
+      on_web_process_terminated(tab, reason)
+    end
+
     # Handle mouse button events on the WebView
     tab.webview.signal_connect("button-press-event") do |_webview, event|
       next false unless current_tab == tab
@@ -1300,6 +1307,45 @@ class BrowserWindow < Gtk::Window
         end
       end
     end
+  end
+
+  # Shows the crash page in a tab whose web process has died
+  #
+  # WebKit runs page content in its own process, so this costs one tab rather
+  # than the window -- but only if something takes the blank tab over. The
+  # reason is logged as well as shown, because "which tab, and was it a crash
+  # or the memory limit" is what a later diagnosis needs.
+  #
+  # `load_alternate_html` rather than `load_html`: the tab keeps the URL it was
+  # showing and its session history, so Ctrl+R reloads the real page instead of
+  # the crash page.
+  #
+  # @param tab [Tab] Tab whose web process ended
+  # @param reason [WebKit2Gtk::WebProcessTerminationReason] Why WebKit ended it
+  def on_web_process_terminated(tab, reason)
+    nickname = termination_reason_nickname(reason)
+    url = tab.webview.uri
+    html = Domain::CrashPage.html(url: url, reason: nickname)
+
+    warn Domain::CrashPage.log_line(url: url, reason: nickname)
+
+    if url && !url.empty?
+      tab.webview.load_alternate_html(html, url, nil)
+    else
+      # A tab that never loaded anything has no URI to be an alternate for
+      tab.webview.load_html(html, nil)
+    end
+  end
+
+  # WebKit's termination reason as a plain string
+  #
+  # Domain::CrashPage takes the nickname ("exceeded-memory-limit") rather than
+  # the enum, so the WebKit type stops here at the Framework boundary.
+  #
+  # @param reason [WebKit2Gtk::WebProcessTerminationReason, Symbol, String] What WebKit reported
+  # @return [String] Reason nickname
+  private def termination_reason_nickname(reason)
+    reason.respond_to?(:nick) ? reason.nick.to_s : reason.to_s
   end
 
   # ========================================
