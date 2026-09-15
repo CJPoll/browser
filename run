@@ -1,10 +1,21 @@
 #! /usr/bin/env bash
 
+set -o pipefail
+
 # Run on the system Ruby (/usr/bin/ruby). Gems are vendored per-project via
 # `bundle config path vendor/bundle`, so no root-owned system gem dir is touched.
 # Prepend /usr/bin so the system ruby/bundle resolve even from a bare window-
 # manager launch with a minimal PATH.
 export PATH="/usr/bin:/home/cjpoll/bin/:$PATH"
 cd ~/dev/browser
+
+# A GTK/WebKit crash says why on stderr, and the browser is normally launched
+# from the window manager, where there is no terminal to say it to. Keep cores
+# too: kernel.core_pattern is a bare "core", so one lands in this directory.
+ulimit -c unlimited
+
+mkdir -p logs
 echo $(ruby --version) > logs/ruby-version.log
-bundle exec ruby simple_browser.rb "${@}"
+
+echo "=== started $(date --iso-8601=seconds) ===" >> logs/browser.log
+bundle exec ruby simple_browser.rb "${@}" 2>&1 | tee -a logs/browser.log

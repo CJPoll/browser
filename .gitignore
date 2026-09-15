@@ -4,3 +4,8 @@ logs/
 # on system Ruby, gems vendored here so no root-owned system gem dir is touched
 /.bundle/
 /vendor/bundle/
+
+# Cores land here: kernel.core_pattern is a bare "core" and `run` cd's to the
+# project root before launching
+core
+core.*
