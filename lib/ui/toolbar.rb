@@ -19,11 +19,14 @@ class Toolbar
   #   - :get_current_tab => -> { Tab or nil }
   #   - :in_zen_mode => -> { true/false }
   #   - :get_download_state => -> { :none, :active, :paused }
+  #   - :on_toggle_dark_mode => -> { ... }
+  #   - :get_dark_mode => -> { true/false }
   def initialize(callbacks)
     @callbacks = callbacks
     @autocomplete_callback = nil
     @autocomplete_popover = nil
     @debounce_timer = nil
+    @applying_dark_mode = false
 
     # Create toolbar box
     @widget = Gtk::Box.new(:horizontal, 5)
@@ -58,6 +61,20 @@ class Toolbar
     @downloads_button.tooltip_text = "Downloads"
     @downloads_button.signal_connect("clicked") { @callbacks[:on_downloads_toggle]&.call }
     @widget.pack_start(@downloads_button, expand: false, fill: false, padding: 0)
+
+    # Dark mode toggle switch
+    dark_mode_box = Gtk::Box.new(:horizontal, 4)
+    dark_mode_label = Gtk::Label.new("Dark")
+    dark_mode_label.tooltip_text = "Toggle dark mode (Ctrl+D)"
+    @dark_mode_switch = Gtk::Switch.new
+    @dark_mode_switch.tooltip_text = "Toggle dark mode (Ctrl+D)"
+    @dark_mode_switch.active = @callbacks[:get_dark_mode]&.call || false
+    @dark_mode_switch.signal_connect("notify::active") do
+      @callbacks[:on_toggle_dark_mode]&.call unless @applying_dark_mode
+    end
+    dark_mode_box.pack_start(dark_mode_label, expand: false, fill: false, padding: 0)
+    dark_mode_box.pack_start(@dark_mode_switch, expand: false, fill: false, padding: 0)
+    @widget.pack_start(dark_mode_box, expand: false, fill: false, padding: 0)
 
     # URL entry
     @url_entry = Gtk::Entry.new
@@ -114,6 +131,17 @@ class Toolbar
     else
       @downloads_button.label = "⬇"
     end
+  end
+
+  # Re-renders the dark-mode switch from the authoritative state, without
+  # re-emitting the toggle intent (the switch's own "notify::active" handler
+  # would otherwise fire again and call back into the Manager).
+  #
+  # @param dark_mode [Boolean] Whether dark mode is currently on
+  def apply_dark_mode(dark_mode)
+    @applying_dark_mode = true
+    @dark_mode_switch.active = dark_mode
+    @applying_dark_mode = false
   end
 
   # Sets the autocomplete callback

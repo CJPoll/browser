@@ -159,7 +159,9 @@ class BrowserWindow < Gtk::Window
       on_downloads_toggle: -> { show_downloads_sidebar },
       get_current_tab: -> { current_tab },  # Safe: nil during init, but callbacks only fire during user interaction
       in_zen_mode: -> { @zen_mode },
-      get_download_state: -> { @download_coordinator.badge_state }
+      get_download_state: -> { @download_coordinator.badge_state },
+      on_toggle_dark_mode: -> { toggle_dark_mode },
+      get_dark_mode: -> { @dark_mode }
     }
     @toolbar_component = Toolbar.new(toolbar_callbacks)
     @toolbar = @toolbar_component.widget
@@ -1428,6 +1430,10 @@ class BrowserWindow < Gtk::Window
     # Toggle GTK theme variant (affects browser UI)
     gtk_settings = Gtk::Settings.default
     gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
+
+    # Keep the toolbar's switch in sync whether this toggle came from the
+    # switch itself or the Ctrl+D shortcut
+    @toolbar_component.apply_dark_mode(@dark_mode)
 
     # Save settings
     @settings_manager.save
