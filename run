@@ -14,6 +14,14 @@ cd ~/dev/browser
 # too: kernel.core_pattern is a bare "core", so one lands in this directory.
 ulimit -c unlimited
 
+# WebKit runs each page in its own web process guarded by a memory-pressure
+# monitor that KILLS the process past an internal limit -- heavy apps like the
+# Notion editor trip it and the tab dies with "exceeded-memory-limit". The
+# proper API to raise that limit (WebKitMemoryPressureSettings) is not exposed
+# in this version's Ruby bindings, so disable the monitor instead. Safe here:
+# 48GB RAM, no cgroup cap, and the OS OOM killer remains the backstop.
+export WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR=1
+
 mkdir -p logs
 echo $(ruby --version) > logs/ruby-version.log
 
