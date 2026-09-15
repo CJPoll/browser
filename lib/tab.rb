@@ -3,7 +3,7 @@ require 'webkit2-gtk'
 # Individual browser tab containing a WebView
 class Tab
   attr_reader :webview, :list_box_row
-  attr_accessor :title, :uri, :favicon_data
+  attr_accessor :title, :uri, :favicon_data, :fullscreen
 
   # Creates a new browser tab
   #
@@ -15,6 +15,7 @@ class Tab
     @title = "New Tab"
     @uri = initial_uri
     @favicon_data = nil
+    @fullscreen = false
     @favicon_db = favicon_db
     @list_box_row = nil  # Will be set when added to sidebar
 

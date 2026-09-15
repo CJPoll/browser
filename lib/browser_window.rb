@@ -38,6 +38,7 @@ require_relative 'domain/media_permission_type'
 require_relative 'domain/url_classifier'
 require_relative 'domain/article_extractor_js'
 require_relative 'domain/file_filters'
+require_relative 'domain/chrome_visibility'
 require_relative 'managers/site_permission_manager'
 require_relative 'managers/popup_manager'
 require_relative 'managers/permission_request_manager'
@@ -97,9 +98,15 @@ class BrowserWindow < Gtk::Window
     gtk_settings = Gtk::Settings.default
     gtk_settings.set_property("gtk-application-prefer-dark-theme", @dark_mode)
 
-    # === Zen Mode State ===
+    # === Chrome Visibility State ===
+    # Chrome (toolbar + sidebar) hides for two independent reasons -- zen mode
+    # (F11) and video fullscreen (per-tab, on Tab#fullscreen). Both funnel
+    # through apply_chrome_visibility / Domain::ChromeVisibility so overlaps
+    # compose. This flag remembers whether the sidebar was visible when the
+    # chrome was hidden, so showing it again is a temporary override rather
+    # than a change to the user's sidebar preference.
     @zen_mode = false
-    @sidebar_visible_before_zen = true
+    @sidebar_visible_before_chrome_hidden = false
 
     # === Popup Notification Tracking ===
     # Track hosts with active notifications to avoid duplicates
@@ -737,6 +744,9 @@ class BrowserWindow < Gtk::Window
 
     # Refresh tabs to show selection
     @sidebar_component.refresh_current_view if @sidebar_component.mode == :tabs
+
+    # The new tab may differ in fullscreen state from the old one; reconcile.
+    apply_chrome_visibility
   end
 
   def update_window_title
@@ -784,6 +794,22 @@ class BrowserWindow < Gtk::Window
     # what happened instead of losing the page silently
     tab.webview.signal_connect("web-process-terminated") do |_webview, reason|
       on_web_process_terminated(tab, reason)
+    end
+
+    # A video entered/left Fullscreen API fullscreen. Hide/restore the chrome
+    # so the video fills the window. Return false so WebKit still performs its
+    # own native fullscreen; returning true would cancel it. Both exit paths
+    # (Esc and the in-player control) funnel through leave-fullscreen.
+    tab.webview.signal_connect("enter-fullscreen") do
+      tab.fullscreen = true
+      apply_chrome_visibility if current_tab == tab
+      false
+    end
+
+    tab.webview.signal_connect("leave-fullscreen") do
+      tab.fullscreen = false
+      apply_chrome_visibility if current_tab == tab
+      false
     end
 
     # Handle mouse button events on the WebView
@@ -1355,29 +1381,43 @@ class BrowserWindow < Gtk::Window
   end
 
   def toggle_zen_mode
-    if @zen_mode
-      # Exit zen mode - show toolbar and restore sidebar state
-      @toolbar.show_all
-      if @sidebar_visible_before_zen
-        # Directly manipulate widget to avoid changing @visible flag
-        # (zen mode is temporary override, not user preference change)
-        @sidebar_component.widget.show_all
-        @paned.set_position(@sidebar_component.width)
-      end
-      @zen_mode = false
+    @zen_mode = !@zen_mode
+    apply_chrome_visibility
+  end
+
+  # Reconciles chrome (toolbar + sidebar) visibility against every reason it
+  # might be hidden. Called from both toggles (zen mode, video fullscreen) and
+  # on tab switch, so overlapping reasons compose correctly -- see
+  # Domain::ChromeVisibility.
+  def apply_chrome_visibility
+    if Domain::ChromeVisibility.hidden?(zen_mode: @zen_mode, video_fullscreen: video_fullscreen?)
+      hide_chrome
     else
-      # Enter zen mode - hide toolbar and sidebar
-      @sidebar_visible_before_zen = @sidebar_component.visible
-      @toolbar.hide
+      show_chrome
+    end
+  end
 
-      if @sidebar_component.visible
-        # Directly manipulate widget to avoid changing @visible flag
-        # (zen mode is temporary override, not user preference change)
-        @sidebar_component.widget.hide
-        @paned.set_position(0)
-      end
+  def video_fullscreen?
+    current_tab&.fullscreen || false
+  end
 
-      @zen_mode = true
+  def hide_chrome
+    @toolbar.hide
+    if @sidebar_component.visible
+      # Directly manipulate widget to avoid changing @visible flag
+      # (hiding chrome is a temporary override, not a preference change)
+      @sidebar_visible_before_chrome_hidden = true
+      @sidebar_component.widget.hide
+      @paned.set_position(0)
+    end
+  end
+
+  def show_chrome
+    @toolbar.show_all
+    if @sidebar_visible_before_chrome_hidden
+      @sidebar_component.widget.show_all
+      @paned.set_position(@sidebar_component.width)
+      @sidebar_visible_before_chrome_hidden = false
     end
   end
 
