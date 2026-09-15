@@ -6,8 +6,8 @@ require_relative '../domain/passkey'
 require_relative '../domain/base64url'
 
 module Adapters
-  # Keeps the browser's passkeys in 1Password, one Secure Note per passkey,
-  # through the `op` command-line tool.
+  # Keeps the browser's passkeys in 1Password, one API Credential item per
+  # passkey, through the `op` command-line tool.
   #
   # 1Password's own passkeys cannot be read from outside its app, so these
   # are ordinary items with the private key in a concealed field. They are
@@ -23,7 +23,11 @@ module Adapters
     class Unavailable < StandardError; end
 
     COMMAND = 'op'
-    CATEGORY = 'Secure Note'
+    # Only Login, Password and API Credential items may carry a URL, and the
+    # URL is what lets a listing be filtered by site before any secret is
+    # fetched. API Credential is the one of the three that 1Password will not
+    # offer to autofill on the site.
+    CATEGORY = 'API Credential'
     TAG = 'toy-browser-passkey'
     SECTION = 'passkey'
     JSON_FORMAT = %w[--format json].freeze

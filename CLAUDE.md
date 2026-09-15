@@ -331,7 +331,7 @@ as the authenticator itself and keeps the keys it makes in 1Password.
 5. A green consent bar (`PasskeyPromptBar`) asks the user; on Continue the
    manager generates an ES256 key (registration) or signs the challenge
    (sign-in) with `Adapters::Es256Signer`
-6. Keys are stored as tagged 1Password Secure Notes through `op`
+6. Keys are stored as tagged 1Password API Credential items through `op`
    (`Adapters::OnePasswordPasskeyStore`), private key in a concealed field;
    nothing secret is written to disk
 

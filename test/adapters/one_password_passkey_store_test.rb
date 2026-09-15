@@ -58,14 +58,15 @@ class AdaptersOnePasswordPasskeyStoreTest < Minitest::Test
 
   # --- save ---
 
-  def test_save_creates_a_tagged_secure_note_for_the_site
+  def test_save_creates_a_tagged_api_credential_item_for_the_site
+    # A URL is only allowed on Login, Password and API Credential items.
     store = store_with([JSON.generate('id' => 'item-1'), '', true])
 
     store.save(passkey)
 
     argv = @runner.invocations.first
     assert_equal %w[op item create], argv.first(3)
-    assert_includes_pair argv, '--category', 'Secure Note'
+    assert_includes_pair argv, '--category', 'API Credential'
     assert_includes_pair argv, '--title', 'Passkey: example.com (Cody)'
     assert_includes_pair argv, '--tags', 'toy-browser-passkey'
     assert_includes_pair argv, '--url', 'https://example.com'
