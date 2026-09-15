@@ -5,6 +5,9 @@
 # Prepend /usr/bin so the system ruby/bundle resolve even from a bare window-
 # manager launch with a minimal PATH.
 export PATH="/usr/bin:/home/cjpoll/bin/:$PATH"
-cd ~/dev/browser
+# Run the checkout this script lives in, so a worktree launches its own branch
+# rather than ~/dev/browser.
+cd "$(dirname "$(readlink -f "$0")")"
+mkdir -p logs
 echo $(ruby --version) > logs/ruby-version.log
 bundle exec ruby simple_browser.rb "${@}"
