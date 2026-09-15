@@ -92,7 +92,6 @@ class BrowserWindow < Gtk::Window
 
     # === Settings State ===
     @dark_mode = @settings_manager.dark_mode
-    @sidebar_width_ratio = 0.30  # Always 30%, not persisted
 
     # Apply dark mode setting to GTK
     gtk_settings = Gtk::Settings.default
@@ -296,8 +295,7 @@ class BrowserWindow < Gtk::Window
     }
     @sidebar_component = Sidebar.new(
       { tab_list_view: tab_list_view, history_list_view: history_list_view, queue_list_view: queue_list_view, download_list_view: @download_list_view },
-      sidebar_callbacks,
-      initial_width: (1200 * @sidebar_width_ratio).to_i
+      sidebar_callbacks
     )
 
     # Wire queue callback AFTER sidebar creation (safe because queue isn't modified during init)
@@ -341,9 +339,9 @@ class BrowserWindow < Gtk::Window
     @initial_map_done = false
     signal_connect("map-event") do
       unless @initial_map_done
-        # Calculate sidebar width based on window width (always 30%)
-        window_width = allocation.width
-        sidebar_width = (window_width * @sidebar_width_ratio).to_i
+        # Start the sidebar at the narrowest width its contents fit in, measured
+        # now that the real queue is loaded and GTK has done layout
+        sidebar_width = @sidebar_component.minimum_content_width
         @sidebar_component.update_width(sidebar_width)
         @paned.set_position(sidebar_width)
         @paned_position_set = true

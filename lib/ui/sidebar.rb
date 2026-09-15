@@ -18,11 +18,11 @@ class Sidebar
   #   - :get_queue_count => -> { Integer }
   #   - :get_download_count => -> { Integer }
   #   - :get_paned => -> { Gtk::Paned widget }
-  # @param initial_width [Integer] Initial sidebar width in pixels
-  def initialize(view_components, callbacks, initial_width: 300)
+  # @param initial_width [Integer, nil] Initial sidebar width in pixels;
+  #   defaults to the narrowest width the contents fit in
+  def initialize(view_components, callbacks, initial_width: nil)
     @view_components = view_components
     @callbacks = callbacks
-    @width = initial_width
     @visible = true
     @mode = :tabs  # Can be :tabs, :history, :queue, or :downloads
 
@@ -122,14 +122,27 @@ class Sidebar
     scrolled.add(@content)
     @widget.pack_start(scrolled, expand: true, fill: true, padding: 0)
 
-    @widget.set_size_request(300, -1)
-
     # Realize entire widget tree
     # This is needed for tests that don't add the sidebar to a window
     @widget.show_all
 
+    # No width was given, so ask the contents how much room they need
+    @width = initial_width || minimum_content_width
+
     # Filter controls are NOT in widget tree yet - they're added dynamically
     # when switching to queue mode via update_filter_button_visibility
+  end
+
+  # The narrowest width at which the current contents still fit.
+  #
+  # The sidebar's widgets ellipsize as it narrows, but only down to a point;
+  # below the width GTK reports here there is no room left to give up and the
+  # contents are pushed out of view. That point is the default width.
+  #
+  # @return [Integer] Width in pixels
+  def minimum_content_width
+    minimum, _natural = @widget.preferred_width
+    minimum
   end
 
   # Shows tabs view in sidebar

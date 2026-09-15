@@ -96,6 +96,20 @@ FileChooser.new(
   test can assert the filters, the title and the preview widget; only `choose`
   needs a user, and it is three lines.
 
+## A widget that cannot shrink sets the sidebar's width
+
+`Sidebar#minimum_content_width` is GTK's minimum for the whole widget tree, and
+it is what the sidebar opens at. Every label in a sidebar row therefore has to
+be able to give up space -- one that cannot puts a floor under the width the
+user sees. A tag name of forty characters held the sidebar at 433px until the
+pill label got `ellipsize = :end`; with it, the same sidebar opens at 257px and
+the floor is the chrome that genuinely cannot shrink (the favicon, the remove
+button, the header's filter and sort buttons).
+
+So: anything rendered from user data in a row -- title, URL, tag name -- gets
+an `ellipsize`. Test it by asserting the row's `preferred_width` minimum is the
+same for short and long content.
+
 ## Do not let a widget reach through another widget
 
 `Sidebar` used to call `queue_list_view.queue_manager.find_tag_by_name(...)`

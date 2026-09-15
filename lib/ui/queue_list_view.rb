@@ -685,6 +685,10 @@ class QueueListView
     # Label with tag name
     label = Gtk::Label.new(tag_name)
     label.override_color(:normal, Gdk::RGBA.new(1.0, 1.0, 1.0, 1.0))  # White text
+    # A long tag name would otherwise be the widest thing in the row, and a
+    # label that cannot ellipsize sets a floor under how narrow the sidebar can
+    # be drawn. Truncate the pill instead, the way the title and URL do.
+    label.ellipsize = :end
     label.margin_top = 4
     label.margin_bottom = 4
     label.margin_start = 6

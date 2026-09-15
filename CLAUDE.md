@@ -209,7 +209,10 @@ The browser uses WebKit2GTK's web context and user content manager:
 
 ### Sidebar Behavior
 
-- **Width**: Always starts at 15% of window width
+- **Width**: Starts at the narrowest width its contents fit in --
+  `Sidebar#minimum_content_width`, which is GTK's own minimum for the widget
+  tree. Titles ellipsize down to that point; below it the contents are pushed
+  out of view. Measured on first map, so it reflects the queue actually loaded.
 - **Not persisted**: Width resets on each window creation
 - **User adjustable**: Can be resized during session, but doesn't save
 - **Single map event**: Sidebar width only set on first window map to prevent resizing when presenting window

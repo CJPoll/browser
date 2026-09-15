@@ -117,6 +117,22 @@ class QueueListViewTest < Minitest::Test
     assert_includes row_texts, "Gaming"
   end
 
+  # The sidebar is drawn as narrow as its rows will fit in, so anything in a row
+  # that refuses to shrink sets a floor under that width. Tag pills truncate for
+  # the same reason the title and URL do.
+  def test_a_long_tag_name_does_not_widen_the_row_it_is_drawn_in
+    @entries = [build_entry(id: 1, title: "Tagged")]
+    @tags_by_entry[1] = [Domain::Tag.new(id: 7, name: "Go")]
+    @view.refresh
+    with_short_tag, _natural = rows.first.preferred_width
+
+    @tags_by_entry[1] = [Domain::Tag.new(id: 7, name: "A tag name long enough to dominate the row")]
+    @view.refresh
+    with_long_tag, _natural = rows.first.preferred_width
+
+    assert_equal with_short_tag, with_long_tag
+  end
+
   def test_reports_filtered_and_total_counts_after_refresh
     reported = nil
     @entries = [build_entry(id: 1), build_entry(id: 2)]
