@@ -1,6 +1,10 @@
 #! /usr/bin/env bash
 
-export PATH="${ASDF_DATA_DIR:-/home/cjpoll/.asdf}/shims:/home/cjpoll/bin/:$PATH"
+# Run on the system Ruby (/usr/bin/ruby). Gems are vendored per-project via
+# `bundle config path vendor/bundle`, so no root-owned system gem dir is touched.
+# Prepend /usr/bin so the system ruby/bundle resolve even from a bare window-
+# manager launch with a minimal PATH.
+export PATH="/usr/bin:/home/cjpoll/bin/:$PATH"
 cd ~/dev/browser
 echo $(ruby --version) > logs/ruby-version.log
 bundle exec ruby simple_browser.rb "${@}"

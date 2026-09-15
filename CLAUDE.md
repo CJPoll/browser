@@ -17,7 +17,7 @@ Or directly with bundle exec:
 bundle exec ruby simple_browser.rb [URL]
 ```
 
-The `run` script ensures asdf environment is available (needed for launching from desktop environment). Optional URL argument opens that URL directly.
+The `run` script forces the system Ruby (`/usr/bin/ruby`) onto `PATH` so the browser resolves it even from a bare window-manager launch. Optional URL argument opens that URL directly.
 
 The browser will start with a 1200x768 window. If no URL provided, it restores the previous session or opens example.com.
 
@@ -137,7 +137,7 @@ separate out; revisit if either grows policy.
 **External Components** (project root):
 - `bin/add_pdf_bookmarks.rb` - adds bookmarks to a just-printed PDF in a
   process of its own, so a PDF library crash cannot take the browser down
-- `run` - Wrapper script for asdf environment setup
+- `run` - Wrapper script: puts system Ruby on PATH, sets core dumps, launches the browser
 
 **Migration History**:
 - **Before Nov 2025**: Monolithic `simple_browser.rb` (~2200 lines)
@@ -469,7 +469,7 @@ When websites use `<input type="file">`, the browser shows a custom file chooser
 ## Development Notes
 
 - This is a Gentoo system using emerge for package management
-- Ruby managed via asdf (version 3.3.0)
+- Ruby: system Ruby (`/usr/bin/ruby`, currently 3.4.10). asdf is no longer used for Ruby here. Gems are vendored per-project via `bundle config path vendor/bundle` (in `.bundle/config`), so the root-owned system gem dir is never written to. Run `bundle install` / `bundle update` with the system `bundle`. The rubygnome stack (gtk3, glib2, cairo, webkit2-gtk, …) is pinned at 4.3.9, not 4.3.3: the older 4.3.x gems fail to compile against current Gentoo GLib/GCC (`glib-enum-types.c` duplicate-symbol error).
 - WebKitGTK version: 2.48.5
 - Follows user's global CLAUDE.md principles (avoid system changes without permission, prefer clarity and single-responsibility)
 

@@ -1,1 +1,6 @@
 logs/
+
+# Project-local gem install (bundle config path vendor/bundle) — browser runs
+# on system Ruby, gems vendored here so no root-owned system gem dir is touched
+/.bundle/
+/vendor/bundle/
