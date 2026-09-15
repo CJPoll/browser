@@ -53,6 +53,15 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::FileFilters` | what file types does this chooser offer? |
 | `Domain::PdfOutline` | what bookmark tree do this document's headings make? |
 | `Domain::PrintOutput` | where did this print job put its PDF, if it made one? |
+| `Domain::WebOrigin` | what origin is this page, and may WebAuthn be used from it? |
+| `Domain::Base64Url` | how do bytes cross the JavaScript boundary? |
+| `Domain::RelyingPartyId` | may this origin use the relying-party ID it asked for? |
+| `Domain::PasskeyRequest` | what did the page ask `navigator.credentials` for? |
+| `Domain::PasskeyPrompt` | what is the user asked before a passkey is made or used? |
+| `Domain::PasskeyResponse` | what does the page get back -- a credential or which DOMException? |
+| `Domain::Passkey` | what is a passkey this browser made? |
+| `Domain::ClientData`, `AuthenticatorData`, `CoseKey`, `AttestationObject` | what bytes does WebAuthn expect? |
+| `Domain::PasskeyShimJs` | the `navigator.credentials` the browser gives every page |
 
 ## Presentation rules are Domain too
 

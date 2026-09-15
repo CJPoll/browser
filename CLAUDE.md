@@ -96,19 +96,26 @@ apply inside it -- read that before adding a file there.
   process and IPC adapters' policy
 - `web_context_manager.rb` - WebKit context setup (stateless utility;
   a known bucket deviation, see below)
+- `passkey_manager.rb` - the browser as WebAuthn authenticator: validates a
+  page's request, returns a prompt, then makes or uses a key
 
 **Adapters** (`lib/adapters/`) -- every non-database side effect:
 `uri_opener.rb` (`xdg-open`), `system_notifier.rb` (`notify-send`),
 `process_launcher.rb`, `ipc_file.rb`, `http_fetcher.rb`, `content_fetcher.rb`,
 `pdf_bookmark_writer.rb`, `fzf_adapter.rb`, `file_system.rb`,
-`session_store.rb`, `settings_store.rb`, `auto_tag_rules_store.rb`.
+`session_store.rb`, `settings_store.rb`, `auto_tag_rules_store.rb`,
+`es256_signer.rb` (OpenSSL keys and signatures),
+`one_password_passkey_store.rb` (passkeys as 1Password items via `op`).
 
 **Domain** (`lib/domain/`) -- pure values and rules, exhaustively tested with
 no IO. Shared vocabulary worth knowing before writing new logic:
 `url_matcher.rb`, `url_host.rb`, `url_classifier.rb`, `external_schemes.rb`,
-`tag_name.rb`, `frecency.rb`. Large HTML/CSS/JS payloads are constant modules
-here too (`markdown_styles.rb`, `mermaid_script.rb`, `article_extractor_js.rb`,
-`video_popout_styles.rb`).
+`tag_name.rb`, `frecency.rb`, `web_origin.rb`, `base64url.rb`. Large
+HTML/CSS/JS payloads are constant modules here too (`markdown_styles.rb`,
+`mermaid_script.rb`, `article_extractor_js.rb`, `video_popout_styles.rb`,
+`passkey_shim_js.rb`). The WebAuthn byte layouts (`client_data.rb`,
+`authenticator_data.rb`, `cose_key.rb`, `attestation_object.rb`) and the
+relying-party rule (`relying_party_id.rb`) live here as well.
 
 **Known bucket deviations** (not addressed by the six-bucket remediation):
 `web_context_manager.rb` and `favicon_manager.rb` sit in `lib/managers/` but
@@ -149,7 +156,11 @@ separate out; revisit if either grows policy.
   Framework-bound callbacks. The root `queue_manager.rb`,
   `history_manager.rb` and `download_manager.rb` are gone, superseded by
   repository + manager pairs.
-- **Result**: 1400+ tests across `test/{domain,repositories,managers,adapters,ui,handlers,integration}/`
+- **Passkeys (Sep 2026)**: the browser became its own WebAuthn authenticator
+  (see "Passkeys" below), adding `lib/handlers/passkey_handler.rb`,
+  `lib/ui/passkey_prompt_bar.rb`, `lib/javascript_core.rb` and a per-tab
+  `UserContentManager`.
+- **Result**: 1600+ tests across `test/{domain,repositories,managers,adapters,ui,handlers,integration}/`
 
 ### Single-Instance Behavior
 
@@ -297,6 +308,54 @@ The browser supports web notifications via the standard Notification API, delive
 - Sites using `PushManager.subscribe()` may show errors like "An unknown error occurred while enabling push notifications"
 - This is a WebKitGTK limitation, not a browser limitation
 - Push API requires platform-specific push service infrastructure that WebKitGTK on Linux doesn't fully provide
+
+### Passkeys (WebAuthn)
+
+WebKitGTK ships no WebAuthn on Linux: `navigator.credentials` is undefined in
+every page, and rebuilding does not help because the transport backends
+(HID, NFC, platform) exist only for Apple ports. The browser therefore acts
+as the authenticator itself and keeps the keys it makes in 1Password.
+
+**How it works:**
+1. A user script injected at document start (`Domain::PasskeyShimJs`) defines
+   `navigator.credentials` and `PublicKeyCredential` before page scripts run
+2. `create()` / `get()` post one JSON message to the `passkey` script message
+   handler and park the promise; the browser settles it by evaluating
+   `window.__toyPasskey.complete(...)`
+3. `PasskeyHandler` reads the message (via `lib/javascript_core.rb`, which
+   loads the JavaScriptCore typelib), takes the origin from the tab's own
+   URI -- never from the page -- and asks `Managers::PasskeyManager`
+4. The manager resolves the relying-party ID against the origin
+   (`Domain::RelyingPartyId`, public suffixes refused), checks the stored
+   passkeys, and returns a prompt or a rejection
+5. A green consent bar (`PasskeyPromptBar`) asks the user; on Continue the
+   manager generates an ES256 key (registration) or signs the challenge
+   (sign-in) with `Adapters::Es256Signer`
+6. Keys are stored as tagged 1Password Secure Notes through `op`
+   (`Adapters::OnePasswordPasskeyStore`), private key in a concealed field;
+   nothing secret is written to disk
+
+**Using it:**
+- Run `op signin` first; without the 1Password desktop app a session lasts
+  about 30 minutes, and a request made while signed out is rejected with a
+  warning on stderr
+- Register one passkey per site from this browser (Google: Security ->
+  Passkeys and security keys -> Create a passkey). It sits alongside any
+  passkey 1Password already holds for the site; 1Password's own passkeys
+  cannot be read from outside its app, so they are not reused
+- Each passkey appears in 1Password as "Passkey: <rp id> (<user>)"
+
+**Limitations:**
+- Conditional mediation (passkey autofill in login forms) is unsupported and
+  reported as unavailable, so sites offer a button instead
+- ES256 only; the sign counter is always zero, as synced providers report
+- Only the top frame gets the shim, so a login iframe on another origin
+  cannot use passkeys
+- Passkeys exported from other providers cannot be imported yet
+
+**Verifying the page boundary:** `rake test` cannot run WebKit signals (see
+`lib/ui/CLAUDE.md`, Testing), so the in-page round trip is a standalone
+check: `bundle exec ruby test/integration/passkey_page_flow_check.rb`.
 
 ### Markdown Rendering
 
@@ -463,14 +522,14 @@ When websites use `<input type="file">`, the browser shows a custom file chooser
 ### WebKitGTK-Specific Issues
 
 - GStreamer plugins required for video playback (see user's system for GStreamer setup)
-- JavaScript injection via UserScript may fail; use `run_javascript()` in load-changed signal instead
+- JavaScript injection via UserScript may fail for page-load features; use `run_javascript()` in load-changed signal instead. A `UserScript` at `UserScriptInjectionTime::START` on a per-tab `UserContentManager` does reliably run before page scripts -- the passkey shim depends on it
 - Cookie manager must be configured on default web context (WebsiteDataManager constructor doesn't accept parameters in Ruby bindings)
 
 ## Development Notes
 
 - This is a Gentoo system using emerge for package management
 - Ruby: system Ruby (`/usr/bin/ruby`, currently 3.4.10). asdf is no longer used for Ruby here. Gems are vendored per-project via `bundle config path vendor/bundle` (in `.bundle/config`), so the root-owned system gem dir is never written to. Run `bundle install` / `bundle update` with the system `bundle`. The rubygnome stack (gtk3, glib2, cairo, webkit2-gtk, …) is pinned at 4.3.9, not 4.3.3: the older 4.3.x gems fail to compile against current Gentoo GLib/GCC (`glib-enum-types.c` duplicate-symbol error).
-- WebKitGTK version: 2.48.5
+- WebKitGTK version: 2.52.5 (`net-libs/webkit-gtk`, both the 4.1 and 6.0 API slots are installed; the browser uses 4.1 through the webkit2-gtk gem)
 - Follows user's global CLAUDE.md principles (avoid system changes without permission, prefer clarity and single-responsibility)
 
 ### GTK Event Handling Gotchas

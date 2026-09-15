@@ -97,6 +97,32 @@ This is the general shape for "signals you provoke yourself" (above): record
 the guard before the call that triggers the signal, and clear it on the main
 loop rather than inline.
 
+## A page API the browser provides itself
+
+`PasskeyHandler` gives pages a `navigator.credentials` that WebKitGTK lacks.
+The shape, for the next feature that has to hand a page an API:
+
+- **The script is Domain** (`Domain::PasskeyShimJs`). The handler injects it
+  as a `UserScript` at document start, top frame only, on the tab's own
+  `UserContentManager` (`Tab` creates one per webview so handlers are scoped).
+- **One message in, one statement out.** The shim posts a JSON request with
+  an id; the handler answers by evaluating
+  `window.__toyPasskey.complete(<json>)`. `Domain::PasskeyRequest` and
+  `Domain::PasskeyResponse` own both wire formats, and
+  `PasskeyShimJs.completion_call` escapes U+2028/9 so the JSON is also valid
+  JavaScript.
+- **Trust nothing the page says about itself.** The origin is
+  `Domain::WebOrigin.from_url(webview.uri)`; the message is data. Top-frame
+  injection is what makes the webview's URI the right origin.
+- **Reading a script message** needs the JavaScriptCore typelib, loaded by
+  `lib/javascript_core.rb`; `result.js_value.to_s` is then the string.
+- **Per-webview pending state is Framework state**, keyed by `object_id` like
+  the markdown guard. A second request while a bar is up is refused with
+  `NotAllowedError` without asking the manager, and the entry is cleared on
+  delivery rather than by any guess about the widget's fate.
+- `handle_message` is public and tested with a fake webview and a spy
+  manager; `attach` is the only method that touches WebKit.
+
 ## Testing
 
 Handlers are tested with small hand-written fakes for the WebKit objects (a

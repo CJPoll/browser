@@ -267,6 +267,28 @@ exhaustive tests without a database. What is left here is the fetch. When a
 manager method grows an `if`, ask which Domain module the condition belongs
 to.
 
+## Two steps with the user in between: return the prompt, keep nothing
+
+`Managers::PasskeyManager` cannot finish a request without the user's
+consent, and a manager must neither hold a widget nor wait for one. So
+`prepare` does every check that needs no user and returns a
+`Domain::PasskeyPrompt` carrying everything finishing will need (request,
+origin, RP ID, candidate passkeys). The Framework shows it and later hands it
+back to `register`, `authenticate` or `cancel`, each of which returns the
+`Domain::PasskeyResponse` for the page.
+
+- **No pending state in the manager.** A page that navigates away leaks
+  nothing here, and every branch is a plain call in the test.
+- **The finishing call re-checks the prompt.** `authenticate` raises unless
+  the passkey is one of the prompt's candidates, so the Framework cannot sign
+  with a key the prompt never offered.
+- **Failures the manager cannot fix become answers.** A store that is not
+  signed in turns into a rejection with a page-facing error plus a `warn`;
+  an exception must never escape into a WebKit signal handler.
+- **The clock and the random source are both injected** (`clock:`,
+  `random:`), so the test asserts the exact credential id bytes and creation
+  time rather than their shape.
+
 ## Split "what is stored" from "what to do when it is asked for"
 
 `Managers::SitePermissionManager` owns the stored permissions;

@@ -158,11 +158,21 @@ stops the widget and the domain from drifting apart.
 
 ## Testing
 
-**GTK signal emission does not reach Ruby handlers under minitest in this
-environment.** `button.clicked` works in a plain `ruby -e` script but is
-silently a no-op inside a `Minitest::Test` method -- the handler never runs
-and no error is raised. Do not write tests that simulate clicks; they will
-fail with an empty result and look like a logic bug.
+**GTK signal emission does not reach Ruby handlers under `rake test`.**
+`button.clicked` works in a plain `ruby -e` script but is silently a no-op
+inside a `Minitest::Test` method -- the handler never runs and no error is
+raised. Do not write `_test.rb` tests that simulate clicks; they will fail
+with an empty result and look like a logic bug.
+
+The cause (found while writing the passkey page check): `minitest/autorun`
+runs the suite from an `at_exit` hook, and once the Ruby VM is exiting
+ruby-gnome no longer dispatches GObject signal closures -- `clicked`,
+`load-changed`, `script-message-received`, `notify::title` -- to Ruby. GLib
+timeouts still fire, so a `Gtk.main` inside a test returns only when its
+deadline does. The very same test passes when run through an explicit
+`exit Minitest.run(ARGV)`. Until the suite runs that way, a test that needs
+real signals is a standalone check outside the `*_test.rb` glob that runs
+itself; `test/integration/passkey_page_flow_check.rb` is the model.
 
 Test instead:
 
