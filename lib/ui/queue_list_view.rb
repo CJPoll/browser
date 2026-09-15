@@ -3,6 +3,7 @@ require 'cgi'
 require 'uri'
 require_relative '../domain/queue_sort'
 require_relative '../domain/tag_color'
+require_relative '../domain/sidebar_title'
 require_relative '../domain/url_matcher'
 
 # Sidebar view for displaying and managing the URL queue
@@ -492,7 +493,7 @@ class QueueListView
     end
 
     title_label = Gtk::Label.new
-    title_label.markup = "<b>#{CGI.escapeHTML(title[0..60])}</b>"
+    title_label.markup = Domain::SidebarTitle.markup(title)
     title_label.halign = :start
     title_label.ellipsize = :end
     vbox.pack_start(title_label, expand: false, fill: false, padding: 0)

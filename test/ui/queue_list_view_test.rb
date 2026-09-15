@@ -78,6 +78,11 @@ class QueueListViewTest < Minitest::Test
     rows.flat_map { |row| labels_in(row).map(&:text) }
   end
 
+  # Gtk::Label#label returns the raw markup (unlike #text, which strips it).
+  def row_markups
+    rows.flat_map { |row| labels_in(row).map(&:label) }
+  end
+
   # --- Rendering ---
 
   def test_renders_one_row_per_entry
@@ -86,6 +91,16 @@ class QueueListViewTest < Minitest::Test
     @view.refresh
 
     assert_equal 2, rows.length
+  end
+
+  def test_title_is_rendered_at_x_large_size
+    @entries = [build_entry(id: 1, title: "First")]
+
+    @view.refresh
+
+    title_markup = row_markups.find { |markup| markup.include?("First") }
+    refute_nil title_markup
+    assert_includes title_markup, "size='x-large'"
   end
 
   def test_refresh_replaces_previous_rows
