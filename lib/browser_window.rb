@@ -89,7 +89,7 @@ class BrowserWindow < Gtk::Window
     # The handler injects navigator.credentials into every tab and asks this
     # window to show the consent bar.
     @passkey_handler = PasskeyHandler.new(
-      show_prompt: ->(prompt, on_allow:, on_cancel:) { show_passkey_prompt_bar(prompt, on_allow: on_allow, on_cancel: on_cancel) }
+      { show_prompt: ->(prompt, on_allow:, on_cancel:) { show_passkey_prompt_bar(prompt, on_allow: on_allow, on_cancel: on_cancel) } }
     )
 
     # === Background Workers ===
