@@ -603,6 +603,23 @@ class ManagersQueueManagerTest < Minitest::Test
     assert_equal [['Gaming', 1], ['Orphan', 0]], counts
   end
 
+  def test_tags_in_use_excludes_zero_carrier_tags
+    entry_id = queued_entry_id
+    @manager.assign_tag_by_name(entry_id, 'Gaming')
+    @manager.create_or_find_tag('Orphan')
+
+    in_use = @manager.tags_in_use.map { |usage| [usage.name, usage.count] }
+
+    assert_equal [['Gaming', 1]], in_use
+  end
+
+  def test_tags_in_use_is_empty_when_every_count_is_zero
+    @manager.create_or_find_tag('Gaming')
+    @manager.create_or_find_tag('Orphan')
+
+    assert_equal [], @manager.tags_in_use
+  end
+
   def test_delete_tag_removes_it
     tag = @manager.create_or_find_tag('Gaming')
 

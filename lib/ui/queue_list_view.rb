@@ -787,24 +787,8 @@ class QueueListView
     scrolled.set_size_request(250, 600)  # Fixed width, min height for ~8 tags
     scrolled.max_content_height = 300   # Max height before scrolling
 
-    # Tag checkboxes container
-    tags_box = Gtk::Box.new(:vertical, 4)
-
-    # Get tag usage counts
-    tag_usages = @callbacks[:get_tag_usages]&.call || []
-
-    if tag_usages.empty?
-      # No tags exist - show message
-      no_tags_label = Gtk::Label.new("No tags available")
-      no_tags_label.style_context.add_class("dim-label")
-      tags_box.pack_start(no_tags_label, expand: false, fill: false, padding: 8)
-    else
-      # Create checkbox for each tag with usage count
-      tag_usages.each do |tag_usage|
-        checkbox = create_filter_checkbox(tag_usage)
-        tags_box.pack_start(checkbox, expand: false, fill: false, padding: 0)
-      end
-    end
+    # Tag checkboxes container, built from whatever the data source supplies
+    tags_box = build_filter_tag_list(@callbacks[:get_tag_usages]&.call || [])
 
     scrolled.add(tags_box)
     vbox.pack_start(scrolled, expand: true, fill: true, padding: 0)
@@ -824,6 +808,25 @@ class QueueListView
 
     popover.add(vbox)
     popover
+  end
+
+  # Builds the popover's tag rows from the usages the data source supplies.
+  # One checkbox per usage; a dim "No tags available" when the list is empty.
+  # Public so a test can assert what it renders without GTK signals.
+  # @param tag_usages [Array<Domain::TagUsage>]
+  # @return [Gtk::Box]
+  public def build_filter_tag_list(tag_usages)
+    tags_box = Gtk::Box.new(:vertical, 4)
+    if tag_usages.empty?
+      no_tags_label = Gtk::Label.new("No tags available")
+      no_tags_label.style_context.add_class("dim-label")
+      tags_box.pack_start(no_tags_label, expand: false, fill: false, padding: 8)
+    else
+      tag_usages.each do |tag_usage|
+        tags_box.pack_start(create_filter_checkbox(tag_usage), expand: false, fill: false, padding: 0)
+      end
+    end
+    tags_box
   end
 
   # Creates a filter checkbox for a tag

@@ -334,6 +334,35 @@ class QueueListViewTest < Minitest::Test
     assert_equal [true, false], announced
   end
 
+  # --- Filter popover tag list ---
+
+  def usage(id:, name:, count:)
+    Domain::TagUsage.new(tag: Domain::Tag.new(id: id, name: name), count: count)
+  end
+
+  def check_buttons_in(widget)
+    return [widget] if widget.is_a?(Gtk::CheckButton)
+    return [] unless widget.respond_to?(:children)
+
+    widget.children.flat_map { |child| check_buttons_in(child) }
+  end
+
+  def test_build_filter_tag_list_renders_one_checkbox_per_usage
+    usages = [usage(id: 1, name: "Gaming", count: 3), usage(id: 2, name: "Tutorial", count: 1)]
+
+    box = @view.build_filter_tag_list(usages)
+
+    labels = check_buttons_in(box).map(&:label)
+    assert_equal ["Gaming (3)", "Tutorial (1)"], labels
+  end
+
+  def test_build_filter_tag_list_shows_the_empty_state_for_no_usages
+    box = @view.build_filter_tag_list([])
+
+    assert_empty check_buttons_in(box)
+    assert_equal ["No tags available"], labels_in(box).map(&:text)
+  end
+
   # --- Bucket rules ---
 
   # ADR 001: a UI component may not hold a manager, repository or adapter.

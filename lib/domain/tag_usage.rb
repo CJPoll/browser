@@ -3,8 +3,9 @@
 module Domain
   # How many queue entries carry a given tag.
   #
-  # Produced for the filter popover, which lists every tag -- including ones
-  # assigned to nothing -- with its count alongside.
+  # Produced for the filter popover, which now lists only tags in use -- carried
+  # by at least one queue entry (see Managers::QueueManager#tags_in_use) -- with
+  # its count alongside.
   class TagUsage
     attr_reader :tag, :count
 
@@ -27,6 +28,11 @@ module Domain
     # @return [Integer, nil] Tag id, for filter selection
     def tag_id
       tag.id
+    end
+
+    # @return [Boolean] Whether any queue entry currently carries this tag
+    def in_use?
+      count.positive?
     end
 
     # @return [Hash] Every attribute, for comparison and inspection

@@ -322,6 +322,13 @@ module Managers
       @tag_repository.usage_counts
     end
 
+    # Tags currently carried by at least one queue entry, for the filter popover.
+    # Reuses the usage counts rather than a second query.
+    # @return [Array<Domain::TagUsage>] In-use tags, alphabetical by name
+    def tags_in_use
+      tag_usage_counts.select(&:in_use?)
+    end
+
     # @param tag_id [Integer, nil] Tag id
     # @return [Symbol] :deleted, :not_found or :invalid_params
     def delete_tag(tag_id)

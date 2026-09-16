@@ -23,8 +23,23 @@ class DomainTagUsageTest < Minitest::Test
   end
 
   def test_allows_a_zero_count
-    # A tag assigned to nothing still appears in the filter popover
+    # The value object still allows count 0; it is Managers::QueueManager#tags_in_use
+    # that drops zero-carrier tags from the filter popover.
     assert_equal 0, Domain::TagUsage.new(tag: GAMING, count: 0).count
+  end
+
+  # === in_use? predicate ===
+
+  def test_in_use_is_false_at_zero_count
+    refute Domain::TagUsage.new(tag: GAMING, count: 0).in_use?
+  end
+
+  def test_in_use_is_true_at_one_carrier
+    assert Domain::TagUsage.new(tag: GAMING, count: 1).in_use?
+  end
+
+  def test_in_use_is_true_for_many_carriers
+    assert Domain::TagUsage.new(tag: GAMING, count: 42).in_use?
   end
 
   def test_is_frozen

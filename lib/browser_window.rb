@@ -286,7 +286,7 @@ class BrowserWindow < Gtk::Window
       get_entries: ->(tag_ids) { @queue_manager.entries_for_filter(tag_ids) },
       get_total_count: -> { @queue_manager.count },
       get_tags_for_entry: ->(entry_id) { @queue_manager.tags_for_entry(entry_id) },
-      get_tag_usages: -> { @queue_manager.tag_usage_counts },
+      get_tag_usages: -> { @queue_manager.tags_in_use },
       find_tag_by_name: ->(tag_name) { @queue_manager.find_tag_by_name(tag_name) },
       find_tag_by_id: ->(tag_id) { @queue_manager.find_tag_by_id(tag_id) },
       on_remove_entry: ->(entry_id) { @queue_manager.remove_by_id(entry_id) },
