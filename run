@@ -24,6 +24,16 @@ ulimit -c unlimited
 # 48GB RAM, no cgroup cap, and the OS OOM killer remains the backstop.
 export WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR=1
 
+# On NVIDIA + Wayland (Hyprland), WebKit's DMABUF/GL renderer composites the
+# accelerated video layer through GDK's gdk_cairo_draw_from_gl. When the
+# compositor unmaps the fullscreen GL surface (e.g. switching workspaces while
+# a video is fullscreen), that draw dereferences a now-null GL context and the
+# whole browser segfaults in gdk_cairo_draw_from_gl -- reproduced three times,
+# always the same signature. Disabling the DMABUF renderer drops WebKit onto a
+# stabler path and avoids the crash. Revisit if a fixed WebKit/NVIDIA stack
+# lands; the heavier hammer if this ever recurs is WEBKIT_DISABLE_COMPOSITING_MODE=1.
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+
 mkdir -p logs
 echo $(ruby --version) > logs/ruby-version.log
 
