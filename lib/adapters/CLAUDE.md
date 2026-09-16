@@ -89,6 +89,32 @@ injected; the test's runner returns canned JSON -- with three additions:
   rows, and an item that no longer parses (someone edited the note) is
   skipped with a `warn` rather than failing every sign-in.
 
+## One command wrapped once: a shared CLI adapter with an error taxonomy
+
+`Adapters::OnePasswordCli` is one `op` invocation -- argv, no stdin, a hard
+timeout, and a `run(*args)` that answers stdout or raises. Both the login-fill
+and (in a follow-up) passkey features shell out to `op`, so the invocation
+mechanics live in one place and the callers (`OnePasswordLoginStore`) speak in
+Domain objects.
+
+- **The error taxonomy is the point.** `NotInstalled` (`Errno::ENOENT`),
+  `NotSignedIn` (stderr matches "not currently signed in" / "no active
+  session"), `TimedOut`, and `Failed` (any other non-zero, message = stderr)
+  each map to a distinct user-facing notice upstream. Swallowing them into
+  `nil` would take that distinction away from the manager.
+- **stdout may be a secret: never put it in an error.** For `op read` the
+  stdout *is* the password, and `run` tees stderr to disk. Error messages
+  carry stderr only; a test asserts a `Failed` for `op read` excludes the
+  fake password.
+- **A hard timeout so `op` can never hang the browser.** The capture runner
+  wraps `Process.wait2` in `Timeout.timeout` and, on expiry, `KILL`s and reaps
+  the child before raising `TimedOut`. If the 1Password desktop integration is
+  on, `op` blocks on its own dialog; the timeout is what keeps an unanswered
+  dialog from freezing the GTK main loop forever. The runner's kwarg is
+  `timeout:`, so a test can pass `0.2`.
+- **stdin is `File::NULL`**, same reason as `OnePasswordPasskeyStore`: `op`
+  reads a pipe as a JSON template, and /dev/null also guarantees no TTY prompt.
+
 ## HTTP: return the body, raise the failure
 
 `Adapters::HttpFetcher` answers with the response body, or nil when the server

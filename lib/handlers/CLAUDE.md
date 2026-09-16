@@ -123,6 +123,37 @@ The shape, for the next feature that has to hand a page an API:
 - `handle_message` is public and tested with a fake webview and a spy
   manager; `attach` is the only method that touches WebKit.
 
+## Evaluate and read back, in an isolated world -- no message handler needed
+
+`LoginFillHandler` also gives a page behaviour it lacks (filling a login form),
+but unlike `PasskeyHandler` it injects no user script and registers no message
+handler. It only *evaluates* JavaScript and reads the completion value:
+
+- **The scripts are Domain** (`Domain::LoginFormJs`): a probe that reports
+  whether there is a fillable form, and a fill call that sets the fields. The
+  handler evaluates the probe, hands the JSON to the manager, and -- once the
+  user confirms -- evaluates the fill call the manager's credential produced.
+- **Run them in an isolated world** (`evaluate_javascript(script, -1,
+  WORLD_NAME, nil, nil)`): the same DOM, separate JS globals, so the page
+  cannot observe the functions and `JSON`/`Event`/`HTMLInputElement.prototype`
+  are the pristine ones. `WORLD_NAME` is a Domain constant so the probe and
+  fill agree, and a test asserts the world passed for both scripts.
+- **Reading the completion value** needs the JavaScriptCore typelib
+  (`lib/javascript_core.rb`); `source.evaluate_javascript_finish(result).to_s`
+  is then the JSON string.
+- **Trust nothing the page says about itself.** The origin is
+  `Domain::WebOrigin.from_url(webview.uri)`, taken again at confirm time so a
+  navigation between offering and filling is caught; the probe's own `origin`
+  field is informational and never used for policy.
+- **Fire-and-forget with a defensive rescue.** If the page navigated the
+  completion block simply never runs; an error in the block releases the tab's
+  pending slot and logs only the exception class -- never the script or the
+  credential, because the scripts throw nothing of their own.
+- **Per-webview pending state**, keyed by `object_id` like the passkey and
+  markdown handlers, released on cancel/notice/report/error. `handle_probe`
+  and `handle_report` are public and tested with a fake webview and a spy
+  manager; `fill_current` and `evaluate` are the only WebKit contact.
+
 ## Testing
 
 Handlers are tested with small hand-written fakes for the WebKit objects (a

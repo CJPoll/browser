@@ -170,6 +170,25 @@ against the domain object's own predicates -- a test asserts that a button is
 offered exactly when `can_pause?`/`can_resume?`/`can_cancel?` says so, which
 stops the widget and the domain from drifting apart.
 
+## One bar, two renders
+
+`LoginFillBar` is a single widget that renders either a prompt (a login to
+fill) or a notice (why nothing was), because both occupy the same spot and the
+Framework should not care which it is showing.
+
+- **The buttons differ, so they are packed at render time, not in the
+  constructor.** `show_prompt` packs Fill + Cancel (and a `ComboBoxText` only
+  when `prompt.choice_needed?`); `show_notice` never packs the Fill button and
+  relabels the remaining one "Dismiss". A test walks the tree and asserts the
+  button set for each.
+- **Data in, intent out, no secret in.** Its inputs are a `LoginFillPrompt` or
+  a `LoginFillNotice` -- neither carries a password -- and it emits `on_fill`
+  with the chosen index or `on_cancel`. It holds no manager and no webview; a
+  test pins that no ivar name matches `manager`/`webview`.
+- **User data is escaped.** The message carries the item's title and username,
+  so the label uses `CGI.escapeHTML` inside Pango markup, exactly as
+  `PasskeyPromptBar` does.
+
 ## Testing
 
 **GTK signal emission does not reach Ruby handlers under `rake test`.**

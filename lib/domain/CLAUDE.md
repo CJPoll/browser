@@ -63,6 +63,13 @@ were extracted precisely because the same logic had been written twice:
 | `Domain::Passkey` | what is a passkey this browser made? |
 | `Domain::ClientData`, `AuthenticatorData`, `CoseKey`, `AttestationObject` | what bytes does WebAuthn expect? |
 | `Domain::PasskeyShimJs` | the `navigator.credentials` the browser gives every page |
+| `Domain::LoginCandidate` | a 1Password Login item as listed -- ids, title, username, URLs, and no password |
+| `Domain::LoginCredential` | the one login secret, redacted in every printable form |
+| `Domain::LoginSiteMatch` | which listed logins belong to this origin's site (eTLD+1) |
+| `Domain::LoginFillPrompt` | what the user is asked before a login is filled |
+| `Domain::LoginFillNotice` | why nothing was filled, in the user's words |
+| `Domain::LoginFormProbe` / `LoginFillReport` | what the page's probe / fill script reported (parse never raises) |
+| `Domain::LoginFormJs` | the probe/fill scripts the browser evaluates in a page |
 
 ## Presentation rules are Domain too
 
@@ -324,6 +331,25 @@ established, and it is worth copying wholesale:
 Give the object the derived reader the callers keep re-deriving.
 `QueueEntry#display_title` (`title || url`) replaced four copies of
 `entry['title'] || entry['url']` across the window and the sidebar.
+
+## A value object that holds a secret redacts every printable form
+
+`Domain::LoginCredential` carries a password, and the launcher (`run`) tees
+stdout AND stderr to `logs/browser.log`, so any code path that prints the
+object -- or a string built from it -- would write the secret to disk. So it
+overrides `inspect`, `to_s`, `pretty_print` and `to_h` to a fixed redacted
+marker, and a test asserts each one excludes the fake password:
+
+- `inspect`/`to_s`/`"#{cred}"` -> `#<Domain::LoginCredential (redacted)>`.
+- `pretty_print(q)` is defined because `pp` walks instance variables (printing
+  the password) *unless* it is.
+- `to_h` masks the password (`{ password: '[REDACTED]' }`). This is a
+  **deliberate deviation** from "`to_h` is every attribute": because `to_h` no
+  longer round-trips, `==`/`eql?`/`hash` compare the readers directly instead
+  of `to_h`, and there is no `with`.
+
+The readers still return the real values -- redaction is about *printing*, not
+about hiding the secret from the fill script that needs it.
 
 ## Predicates about "what may this subdomain accept" live on the Domain object
 

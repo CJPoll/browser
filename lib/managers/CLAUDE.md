@@ -289,6 +289,32 @@ back to `register`, `authenticate` or `cancel`, each of which returns the
   `random:`), so the test asserts the exact credential id bytes and creation
   time rather than their shape.
 
+## Re-check the world at the finishing call, not just at the start
+
+`Managers::LoginFillManager` is the same two-steps-with-the-user shape, with a
+security twist: the state it gated on at `prepare` can change while the bar is
+on screen, so the finishing call re-checks it before doing anything expensive
+or irreversible.
+
+- `prepare(origin:, probe_json:)` gates on a secure origin and a password
+  field, lists logins, matches by site, and returns a `LoginFillPrompt` or a
+  `LoginFillNotice`. It **never fetches a password** -- a test asserts the
+  store's `password_for` is untouched, so the secret is read only after the
+  user confirms.
+- `credential_for(prompt, index, live_origin:)` takes the origin **again** and
+  returns `:origin_changed` (without calling the store) when it no longer
+  matches the prompt's origin -- the page may have navigated under the bar. It
+  also re-validates the index against the prompt (`candidate_at` raises for an
+  index the prompt never offered, a Framework bug), so nothing is fetched for
+  an account the user was not shown.
+- `conclude(report_json)` reads what the page reported and answers `nil`
+  (filled) or a `:fill_failed` notice.
+
+Failures the manager cannot fix become named notices: each store error class
+(`NotInstalled`, `NotSignedIn`, `TimedOut`, everything else -> `:unavailable`)
+maps to a reason, logged as the reason symbol only -- never the label, the
+credential, or the exception message that might quote a secret.
+
 ## Split "what is stored" from "what to do when it is asked for"
 
 `Managers::SitePermissionManager` owns the stored permissions;

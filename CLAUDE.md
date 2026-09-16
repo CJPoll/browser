@@ -360,6 +360,56 @@ as the authenticator itself and keeps the keys it makes in 1Password.
 `lib/ui/CLAUDE.md`, Testing), so the in-page round trip is a standalone
 check: `bundle exec ruby test/integration/passkey_page_flow_check.rb`.
 
+### 1Password login fill
+
+Fills a page's login form (username/email and password) from the user's
+1Password vault through the `op` CLI. Read and fill only: no item creation or
+editing, and it never submits the form -- you press Enter yourself.
+
+Trigger it with the toolbar 🔑 button or `Ctrl+Shift+L`.
+
+**How it works:**
+1. `LoginFillHandler.fill_current` evaluates a probe script
+   (`Domain::LoginFormJs.probe_script`) in the tab's isolated world
+   (`toy-browser-login-fill`) and reads back whether the top document has a
+   fillable password field
+2. `Managers::LoginFillManager#prepare` gates on a secure origin (https, or
+   http on loopback) and a password field, then lists Login items
+   (`op item list --categories Login --format json` -- no field values) and
+   matches them to the site by registrable domain / eTLD+1
+   (`Domain::LoginSiteMatch`, the same `PublicSuffix` precedent passkeys set)
+3. A teal consent bar (`LoginFillBar`) offers a one-row confirm for a single
+   match, or a dropdown for several; nothing is fetched yet
+4. On Fill, `#credential_for` re-checks the live origin and reveals exactly
+   one secret (`op read --no-newline op://<vault>/<item>/password`), as late
+   as possible and only for the confirmed item
+5. The handler evaluates a fill script that sets the fields with the native
+   value setter and dispatches `input`/`change` (which React/Vue/Angular
+   listen to). The script itself re-checks the top frame and origin and never
+   submits
+
+**Security:** the origin is always the tab's own URI, never anything the page
+reports; the password is fetched only after the user confirms, never put on a
+command line, never logged (`Domain::LoginCredential` redacts every printable
+form; the manager/handler log only reason symbols and site keys), and never
+persisted -- the only sink is `evaluate_javascript`. Because `run` tees stdout
+and stderr to `logs/browser.log`, these are enforced by tests, not guidance.
+
+**Using it:**
+- Run `op signin` first (or enable the desktop-app integration); a request
+  made while locked ends in a "1Password is locked" notice
+- Google-style flows put the password on a second page: trigger on the
+  password page, not the email page (the email page has no password field, so
+  you get a "No password field" notice)
+
+**Limitations:**
+- `op` runs synchronously on the GTK main loop with a 30 s hard timeout, so
+  the UI freezes while it runs (normally well under a second)
+- No memory of the last-used account per site; the top frame only
+
+**Verifying the page boundary:** as with passkeys, the in-page round trip is a
+standalone check: `bundle exec ruby test/integration/login_fill_page_flow_check.rb`.
+
 ### Markdown Rendering
 
 The browser renders `.md` and `.markdown` files with GitHub-flavored styling instead of showing raw text.
@@ -506,6 +556,7 @@ When websites use `<input type="file">`, the browser shows a custom file chooser
 - `Ctrl+-`: Zoom out
 - `Ctrl+0`: Reset zoom to 100%
 - `Ctrl+U`: Toggle markdown source (when viewing `.md` files)
+- `Ctrl+Shift+L`: Fill login from 1Password (or click the 🔑 toolbar button)
 - `Ctrl+Shift+B`: Add PDF bookmarks to existing PDF (for external PDFs or old PDFs without bookmarks)
 - `Ctrl+O`: Open file (supports HTML, Markdown, PDF, images)
 - `Ctrl+Shift+P`: Video popout (YouTube only)

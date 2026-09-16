@@ -210,6 +210,19 @@ Current classes that already conform:
 | `lib/ui/passkey_prompt_bar.rb` | UI (data in, intent callbacks out) |
 | `lib/handlers/passkey_handler.rb` | Framework (injects the shim, reads script messages, evaluates the reply) |
 | `lib/javascript_core.rb` | Framework (loads the JavaScriptCore typelib) |
+| `lib/domain/login_candidate.rb` | Domain (a Login item as listed; carries no password by design) |
+| `lib/domain/login_credential.rb` | Domain (the one secret, redacted in every printable form) |
+| `lib/domain/login_site_match.rb` | Domain (which listed logins belong to this origin's site; public_suffix is a pure lookup) |
+| `lib/domain/login_fill_prompt.rb` | Domain (what the user is asked, and what finishing needs) |
+| `lib/domain/login_fill_notice.rb` | Domain (why nothing was filled, in the user's words) |
+| `lib/domain/login_form_probe.rb` | Domain (what the page's probe reported; parse never raises) |
+| `lib/domain/login_fill_report.rb` | Domain (what the page's fill reported; parse never raises) |
+| `lib/domain/login_form_js.rb` | Domain (constant probe/fill script module; JSON.generate is a pure transform) |
+| `lib/adapters/one_password_cli.rb` | Adapters (one `op` invocation: argv, no stdin, hard timeout, error taxonomy) |
+| `lib/adapters/one_password_login_store.rb` | Adapters (lists Login items, reveals one password; maps JSON to Domain) |
+| `lib/managers/login_fill_manager.rb` | Managers (gate, probe verdict, list, match, confirm, fetch, conclude; no state between calls) |
+| `lib/ui/login_fill_bar.rb` | UI (data in, `on_fill`/`on_cancel` out; never receives a password) |
+| `lib/handlers/login_fill_handler.rb` | Framework (evaluates the probe/fill scripts in the isolated world, reads the results, drives the bar) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are
