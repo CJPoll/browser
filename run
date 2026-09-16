@@ -7,7 +7,9 @@ set -o pipefail
 # Prepend /usr/bin so the system ruby/bundle resolve even from a bare window-
 # manager launch with a minimal PATH.
 export PATH="/usr/bin:/home/cjpoll/bin/:$PATH"
-cd ~/dev/browser
+# Run the checkout this script lives in, so a worktree launches its own branch
+# rather than ~/dev/browser.
+cd "$(dirname "$(readlink -f "$0")")"
 
 # A GTK/WebKit crash says why on stderr, and the browser is normally launched
 # from the window manager, where there is no terminal to say it to. Keep cores

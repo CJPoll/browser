@@ -192,6 +192,24 @@ Current classes that already conform:
 | `lib/managers/pdf_bookmark_manager.rb` | Managers (which PDFs get bookmarks, and in which process) |
 | `lib/ui/file_chooser.rb` | UI (filter descriptors in, chosen paths out) |
 | `lib/ui/video_popout_window.rb` | UI (holds only a webview and the payload it injects) |
+| `lib/domain/base64url.rb` | Domain (the byte encoding at the JavaScript boundary) |
+| `lib/domain/web_origin.rb` | Domain (a page's origin, and whether WebAuthn may use it) |
+| `lib/domain/relying_party_id.rb` | Domain (may this origin use the RP ID it asked for; public_suffix is a pure lookup) |
+| `lib/domain/passkey_request.rb` | Domain (wire format from the shim; carries no origin by design) |
+| `lib/domain/passkey_response.rb` | Domain (wire format back to the shim) |
+| `lib/domain/passkey_prompt.rb` | Domain (what the user is asked, and what finishing needs) |
+| `lib/domain/passkey.rb` | Domain (a passkey this browser made) |
+| `lib/domain/client_data.rb` | Domain (clientDataJSON and its hash) |
+| `lib/domain/authenticator_data.rb` | Domain (authData byte layout) |
+| `lib/domain/cose_key.rb` | Domain (ES256 public key as COSE_Key; cbor is a pure transform) |
+| `lib/domain/attestation_object.rb` | Domain (the `none` attestation object) |
+| `lib/domain/passkey_shim_js.rb` | Domain (constant script module) |
+| `lib/adapters/es256_signer.rb` | Adapters (OpenSSL key generation and signing draw randomness) |
+| `lib/adapters/one_password_passkey_store.rb` | Adapters (passkeys as 1Password items via `op`, argv only) |
+| `lib/managers/passkey_manager.rb` | Managers (validate, prompt, then make or use a key; owns clock and random source) |
+| `lib/ui/passkey_prompt_bar.rb` | UI (data in, intent callbacks out) |
+| `lib/handlers/passkey_handler.rb` | Framework (injects the shim, reads script messages, evaluates the reply) |
+| `lib/javascript_core.rb` | Framework (loads the JavaScriptCore typelib) |
 
 Target classification for the current pseudo-managers. Each wraps its own
 table(s) and becomes its own repository -- they rhyme today, but they are

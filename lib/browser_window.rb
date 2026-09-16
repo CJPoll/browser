@@ -29,6 +29,7 @@ require_relative 'ui/download_list_view'
 require_relative 'ui/download_notification_bar'
 require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/notification_permission_bar'
+require_relative 'ui/passkey_prompt_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
 require_relative 'ui/file_chooser'
@@ -56,6 +57,7 @@ require_relative 'managers/browser_restarter'
 require_relative 'managers/pdf_bookmark_manager'
 require_relative 'handlers/download_handler'
 require_relative 'handlers/markdown_handler'
+require_relative 'handlers/passkey_handler'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -84,6 +86,13 @@ class BrowserWindow < Gtk::Window
     @external_opener = Managers::ExternalOpener.new
     @browser_restarter = Managers::BrowserRestarter.new(session_manager: @session_manager)
     @pdf_bookmark_manager = Managers::PdfBookmarkManager.new
+
+    # Passkeys: the browser is the WebAuthn authenticator (WebKitGTK has none).
+    # The handler injects navigator.credentials into every tab and asks this
+    # window to show the consent bar.
+    @passkey_handler = PasskeyHandler.new(
+      { show_prompt: ->(prompt, on_allow:, on_cancel:) { show_passkey_prompt_bar(prompt, on_allow: on_allow, on_cancel: on_cancel) } }
+    )
 
     # === Background Workers ===
     @queue_metadata_worker = Managers::QueueMetadataWorker.new(@queue_manager)
@@ -973,6 +982,9 @@ class BrowserWindow < Gtk::Window
     tab.webview.signal_connect("run-file-chooser") do |webview, request|
       handle_file_chooser_request(webview, request)
     end
+
+    # Give the page navigator.credentials, answered by the passkey handler
+    @passkey_handler.attach(tab.webview)
   end
 
   # Opens (or blocks) a popup the page asked for
@@ -2053,6 +2065,36 @@ class BrowserWindow < Gtk::Window
     @content_vbox.pack_start(notification_bar.widget, expand: false, fill: false, padding: 0)
     @content_vbox.reorder_child(notification_bar.widget, 0)
     notification_bar.widget.show_all
+  end
+
+  # Shows the consent bar for a passkey request
+  #
+  # The handler already refuses a second request from the same page while
+  # one is pending, so there is nothing to deduplicate here.
+  #
+  # @param prompt [Domain::PasskeyPrompt] What the page asked for
+  # @param on_allow [Proc] Receives the index of the chosen passkey
+  # @param on_cancel [Proc] Receives nothing
+  def show_passkey_prompt_bar(prompt, on_allow:, on_cancel:)
+    bar = PasskeyPromptBar.new(
+      on_allow: ->(choice) {
+        response = on_allow.call(choice)
+        if response.resolved?
+          puts "Passkey #{prompt.create? ? 'created' : 'used'} for #{prompt.rp_id}"
+        else
+          puts "Passkey request failed for #{prompt.rp_id}: #{response.error_message}"
+        end
+      },
+      on_cancel: -> {
+        on_cancel.call
+        puts "Passkey request declined for #{prompt.rp_id}"
+      }
+    )
+    bar.show_prompt(prompt)
+
+    @content_vbox.pack_start(bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(bar.widget, 0)
+    bar.widget.show_all
   end
 
   # Handles a web notification by sending it to dunst via notify-send

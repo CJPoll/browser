@@ -72,6 +72,23 @@ and the paths as `ARGV`.
 - **The child owns the temp file it was given**: it reads the markdown and
   deletes it. The parent cannot know when the child is finished with it.
 
+## Shelling out for an answer: capture, do not just run
+
+`Adapters::OnePasswordPasskeyStore` needs what `op` prints, so its runner
+answers `[stdout, stderr, status]` (`Open3.capture3`) rather than `system`'s
+boolean. The rules above still hold -- argv, never a shell string; runner
+injected; the test's runner returns canned JSON -- with three additions:
+
+- **A non-zero status raises a named error** (`Unavailable`) carrying
+  stderr. "You are not currently signed in" is something the manager must
+  relay to the page and the log, not something to swallow into `nil`.
+- **A value that must not carry newlines into an argument** (a PEM) is
+  base64url-encoded into the field and decoded on the way back. The adapter
+  owns that detail; `Domain::Passkey` only ever sees PEM.
+- **The adapter maps items to Domain objects** the way a repository maps
+  rows, and an item that no longer parses (someone edited the note) is
+  skipped with a `warn` rather than failing every sign-in.
+
 ## HTTP: return the body, raise the failure
 
 `Adapters::HttpFetcher` answers with the response body, or nil when the server
