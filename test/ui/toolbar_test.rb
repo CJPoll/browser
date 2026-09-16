@@ -88,4 +88,23 @@ class ToolbarTest < Minitest::Test
 
     refute toolbar.respond_to?(:settings_manager)
   end
+
+  # Collects every Gtk::Button in a widget tree.
+  def buttons_in(widget)
+    found = widget.is_a?(Gtk::Button) ? [widget] : []
+    found + (widget.respond_to?(:children) ? widget.children.flat_map { |child| buttons_in(child) } : [])
+  end
+
+  def test_has_a_login_fill_button
+    toolbar = Toolbar.new(build_callbacks)
+
+    tooltips = buttons_in(toolbar.widget).map(&:tooltip_text)
+    assert_includes tooltips, 'Fill login from 1Password (Ctrl+Shift+L)'
+  end
+
+  def test_builds_without_an_on_fill_login_callback
+    # The callback is optional (invoked with &.call), so a toolbar built
+    # without it still constructs.
+    Toolbar.new(build_callbacks)
+  end
 end

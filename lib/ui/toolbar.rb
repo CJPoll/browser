@@ -21,6 +21,7 @@ class Toolbar
   #   - :get_download_state => -> { :none, :active, :paused }
   #   - :on_toggle_dark_mode => -> { ... }
   #   - :get_dark_mode => -> { true/false }
+  #   - :on_fill_login => -> { ... }
   def initialize(callbacks)
     @callbacks = callbacks
     @autocomplete_callback = nil
@@ -61,6 +62,12 @@ class Toolbar
     @downloads_button.tooltip_text = "Downloads"
     @downloads_button.signal_connect("clicked") { @callbacks[:on_downloads_toggle]&.call }
     @widget.pack_start(@downloads_button, expand: false, fill: false, padding: 0)
+
+    # Login fill (1Password) button
+    @login_fill_button = Gtk::Button.new(label: "🔑")
+    @login_fill_button.tooltip_text = "Fill login from 1Password (Ctrl+Shift+L)"
+    @login_fill_button.signal_connect("clicked") { @callbacks[:on_fill_login]&.call }
+    @widget.pack_start(@login_fill_button, expand: false, fill: false, padding: 0)
 
     # Dark mode toggle switch
     dark_mode_box = Gtk::Box.new(:horizontal, 4)
