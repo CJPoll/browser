@@ -23,6 +23,7 @@ class KeyboardHandler
   #   - :window_actions => { reload_browser:, open_new_window:, open_video_popout:, open_site_permissions:, open_file: }
   #   - :find_actions => { show_find_bar: }
   #   - :markdown_actions => { toggle_source:, add_pdf_bookmarks: }
+  #   - :login_actions => { fill_current: }
   # @raise [ArgumentError] if required callback groups or keys are missing
   def initialize(callbacks)
     validate_callbacks(callbacks)
@@ -71,6 +72,10 @@ class KeyboardHandler
     when Gdk::Keyval::KEY_Q
       # Ctrl+Shift+Q: Add current tab to queue
       @callbacks[:queue_actions][:add_current].call
+      true
+    when Gdk::Keyval::KEY_L
+      # Ctrl+Shift+L: Fill login from 1Password
+      @callbacks[:login_actions][:fill_current].call
       true
     when Gdk::Keyval::KEY_Tab, Gdk::Keyval::KEY_ISO_Left_Tab
       # Ctrl+Shift+Tab: Previous tab (or previous queue item if queue sidebar is open)
@@ -270,7 +275,8 @@ class KeyboardHandler
       mode_actions: [:toggle_dark_mode, :toggle_zen_mode, :toggle_inspector],
       window_actions: [:reload_browser, :open_new_window, :open_video_popout, :print_page],
       find_actions: [:show_find_bar],
-      markdown_actions: [:toggle_source, :add_pdf_bookmarks]
+      markdown_actions: [:toggle_source, :add_pdf_bookmarks],
+      login_actions: [:fill_current]
     }
 
     # Check for missing groups

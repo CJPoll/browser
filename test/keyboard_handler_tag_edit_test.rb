@@ -187,6 +187,9 @@ class KeyboardHandlerTagEditTest < Minitest::Test
       markdown_actions: {
         toggle_source: -> {},
         add_pdf_bookmarks: -> {}
+      },
+      login_actions: {
+        fill_current: -> {}
       }
     }
   end
