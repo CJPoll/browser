@@ -30,6 +30,7 @@ require_relative 'ui/download_notification_bar'
 require_relative 'ui/certificate_exception_bar'
 require_relative 'ui/notification_permission_bar'
 require_relative 'ui/passkey_prompt_bar'
+require_relative 'ui/login_fill_bar'
 require_relative 'ui/site_permissions_window'
 require_relative 'ui/autocomplete_popover'
 require_relative 'ui/file_chooser'
@@ -58,6 +59,7 @@ require_relative 'managers/pdf_bookmark_manager'
 require_relative 'handlers/download_handler'
 require_relative 'handlers/markdown_handler'
 require_relative 'handlers/passkey_handler'
+require_relative 'handlers/login_fill_handler'
 
 class BrowserWindow < Gtk::Window
   def initialize
@@ -92,6 +94,14 @@ class BrowserWindow < Gtk::Window
     # window to show the consent bar.
     @passkey_handler = PasskeyHandler.new(
       { show_prompt: ->(prompt, on_allow:, on_cancel:) { show_passkey_prompt_bar(prompt, on_allow: on_allow, on_cancel: on_cancel) } }
+    )
+
+    # Login fill: fetch a username/password from 1Password (via `op`) and fill
+    # the current page's login form. The handler evaluates the probe/fill
+    # scripts in the tab and asks this window to show the consent bar.
+    @login_fill_handler = LoginFillHandler.new(
+      { show_prompt: ->(prompt, on_fill:, on_cancel:) { show_login_fill_bar(prompt, on_fill: on_fill, on_cancel: on_cancel) },
+        show_notice: ->(notice) { show_login_fill_notice(notice) } }
     )
 
     # === Background Workers ===
@@ -170,7 +180,8 @@ class BrowserWindow < Gtk::Window
       in_zen_mode: -> { @zen_mode },
       get_download_state: -> { @download_coordinator.badge_state },
       on_toggle_dark_mode: -> { toggle_dark_mode },
-      get_dark_mode: -> { @dark_mode }
+      get_dark_mode: -> { @dark_mode },
+      on_fill_login: -> { fill_login_for_current_tab }
     }
     @toolbar_component = Toolbar.new(toolbar_callbacks)
     @toolbar = @toolbar_component.widget
@@ -526,6 +537,9 @@ class BrowserWindow < Gtk::Window
       markdown_actions: {
         toggle_source: -> { toggle_markdown_source },
         add_pdf_bookmarks: -> { add_pdf_bookmarks }
+      },
+      login_actions: {
+        fill_current: -> { fill_login_for_current_tab }
       }
     }
     @keyboard_handler = KeyboardHandler.new(keyboard_callbacks)
@@ -2091,6 +2105,34 @@ class BrowserWindow < Gtk::Window
       }
     )
     bar.show_prompt(prompt)
+
+    @content_vbox.pack_start(bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(bar.widget, 0)
+    bar.widget.show_all
+  end
+
+  # Triggers a login fill for the current tab (toolbar button / Ctrl+Shift+L).
+  def fill_login_for_current_tab
+    return unless current_tab
+
+    @login_fill_handler.fill_current(current_tab.webview)
+  end
+
+  # Shows the login-fill consent bar. The on_fill/on_cancel lambdas are the
+  # handler's, passed through unchanged; the handler does the logging.
+  def show_login_fill_bar(prompt, on_fill:, on_cancel:)
+    bar = LoginFillBar.new(on_fill: on_fill, on_cancel: on_cancel)
+    bar.show_prompt(prompt)
+
+    @content_vbox.pack_start(bar.widget, expand: false, fill: false, padding: 0)
+    @content_vbox.reorder_child(bar.widget, 0)
+    bar.widget.show_all
+  end
+
+  # Shows a login-fill notice (nothing was filled, and why).
+  def show_login_fill_notice(notice)
+    bar = LoginFillBar.new(on_fill: nil, on_cancel: nil)
+    bar.show_notice(notice)
 
     @content_vbox.pack_start(bar.widget, expand: false, fill: false, padding: 0)
     @content_vbox.reorder_child(bar.widget, 0)
